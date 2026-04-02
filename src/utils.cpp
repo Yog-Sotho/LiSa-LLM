@@ -1,13 +1,11 @@
 #include "utils.hpp"
-#include <yaml-cpp/yaml.h>
-#include <stdexcept>
 
 Config load_config(const std::string& filename) {
     YAML::Node root = YAML::LoadFile(filename);
     Config cfg;
     cfg.model_path = root["model_path"].as<std::string>();
     cfg.vocab_path = root["vocab_path"].as<std::string>();
-    if (root["merges_path"]) cfg.merges_path = root["merges_path"].as<std::string>();
+    cfg.merges_path = root["merges_path"].as<std::string>();
     if (root["listen_addr"]) cfg.listen_addr = root["listen_addr"].as<std::string>();
     if (root["listen_port"]) cfg.listen_port = root["listen_port"].as<int>();
     if (root["enable_tls"]) cfg.enable_tls = root["enable_tls"].as<bool>();
@@ -21,5 +19,7 @@ Config load_config(const std::string& filename) {
     if (root["max_new_tokens_default"]) cfg.max_new_tokens_default = root["max_new_tokens_default"].as<int>();
     if (root["memory_limit_bytes"]) cfg.memory_limit_bytes = root["memory_limit_bytes"].as<size_t>();
     if (root["sandbox_enabled"]) cfg.sandbox_enabled = root["sandbox_enabled"].as<bool>();
+    if (root["use_gpu"]) cfg.use_gpu = root["use_gpu"].as<bool>();
+    if (root["gpu_layers"]) cfg.gpu_layers = root["gpu_layers"].as<int>();
     return cfg;
 }
