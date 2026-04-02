@@ -1,10 +1,23 @@
-# LiSa-LLM – Lightweight, Sandboxed LLM Inference Server
+<div align="center">
+  <img src="assets/Logo_LiSa.png" alt="LiSa Logo" width="420" style="margin-bottom: 20px;">
+<h1># LiSa-LLM – Lightweight, Sandboxed LLM Inference Server</h1>
 
 > *“Because your cat‑sized model deserves a lion‑sized sandbox.”*
 
-LiSa-LLM is a **production‑grade**, self‑contained C++20 inference server for custom transformer models, using **GGML** for tensor computations. It features a **hardened Linux sandbox** (namespaces, seccomp, cgroup v2, pivot_root), **API key authentication**, **TLS support**, **streaming Server‑Sent Events**, and a **custom binary model format** (no llama.cpp required). Perfect for edge deployments or whenever you need to run untrusted models without losing sleep.
+<p><strong>LiSa-LLM is a **production‑grade**, self‑contained C++20 inference server for custom transformer models, using **GGML** for tensor computations. It features a **hardened Linux sandbox** (namespaces, seccomp, cgroup v2, pivot_root), **API key authentication**, **TLS support**, **streaming Server‑Sent Events**, and a **custom binary model format** (no llama.cpp required). Perfect for edge deployments or whenever you need to run untrusted models without losing sleep.
+</strong></p>
 
-## Features
+  <p>
+    <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT">
+    <img src="https://img.shields.io/badge/C++-ready-blue.svg" alt="C++ Ready">
+    <img src="https://img.shields.io/badge/GPU-Required-green.svg" alt="GPU Required">
+    <\p>
+      <a href="https://github.com/sponsors/Yog-Sotho" target="_blank" rel="noopener">
+    <img src="https://img.shields.io/badge/Sponsor❤️-30363D.svg?logo=githubsponsors&logoColor=EA4AAA" alt="Sponsor on GitHub">
+  </a>
+<\div>
+
+<h2>## Features
 
 - 🧠 **Pure GGML** transformer with multi‑head attention, RoPE, and KV cache (skeleton ready for your implementation).
 - 🔒 **Sandboxed execution** – the model runs in a separate process with:
@@ -18,7 +31,7 @@ LiSa-LLM is a **production‑grade**, self‑contained C++20 inference server fo
 - 📦 **No external ML frameworks** – just GGML, C++20, and a few header‑only libs.
 - 🔁 **Model integrity checks** (SHA‑256) before loading.
 
-## Build & Run
+<h2>## Build & Run<\h2>
 
 ### Dependencies
 
@@ -31,7 +44,7 @@ LiSa-LLM is a **production‑grade**, self‑contained C++20 inference server fo
 
 All other libraries (`ggml`, `cpp-httplib`, `nlohmann/json`) are bundled in `third_party/`.
 
-### Compile
+<h2>### Compile<\h2>
 
 ```bash
 mkdir build && cd build
