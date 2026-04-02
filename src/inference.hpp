@@ -3,18 +3,17 @@
 #include "model.hpp"
 #include "tokenizer.hpp"
 #include "utils.hpp"
+#include <ggml.h>
 #include <vector>
 #include <string>
-#include <memory>
 #include <mutex>
-#include <ggml.h>
+#include <random>
 
 class InferenceEngine {
 public:
     InferenceEngine(Model& model, const Config& cfg);
     ~InferenceEngine();
     
-    // Thread‑safe generation
     std::vector<std::string> generate(const std::string& prompt,
                                       int max_new_tokens,
                                       float temperature,
@@ -24,20 +23,17 @@ private:
     Model& model_;
     const Config& cfg_;
     BPETokenizer tokenizer_;
+    std::mt19937 rng_;
     std::mutex mutex_;
     
-    // KV cache: for each layer, a pair of tensors (K, V) of shape [n_ctx, n_head, head_dim]
     struct KVCache {
         std::vector<ggml_tensor*> k;
         std::vector<ggml_tensor*> v;
         int current_len = 0;
-    };
-    KVCache kv_cache_;
+        void init(ggml_context* ctx, int n_layer, int n_ctx, int n_head, int n_embd);
+        void clear();
+    } kv_cache_;
     
-    void init_kv_cache();
-    void update_kv_cache(int layer, ggml_tensor* k, ggml_tensor* v);
-    void clear_kv_cache();
-    
-    // Helper to apply RoPE to Q and K
-    void apply_rope(ggml_tensor* q, ggml_tensor* k, int pos, int n_embd_head);
+    void build_graph(ggml_context* ctx, const std::vector<int>& input_ids, int pos_start, int n_tokens);
+    int sample(const std::vector<float>& logits, float temperature, float top_p);
 };
