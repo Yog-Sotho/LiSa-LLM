@@ -1,57 +1,79 @@
 #pragma once
-#include <iostream>
-#include <fstream>
-#include <sstream>
+
+#include <string>
 #include <chrono>
-#include <ctime>
 #include <iomanip>
+#include <sstream>
 #include <nlohmann/json.hpp>
-#include <yaml-cpp/yaml.h>
 
 using json = nlohmann::json;
 
-// ---------------------------------------------------------------------
-// Simple JSON logger (one line per log entry)
-// ---------------------------------------------------------------------
-inline void log_json(const json& j) {
+// -----------------------------------------------------------------------------
+// Logging: JSON lines to stdout
+// -----------------------------------------------------------------------------
+inline void log_info(const std::string& msg, const json& extra = json::object()) {
+    json j = {
+        {"timestamp", std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::system_clock::now().time_since_epoch())
+                          .count()},
+        {"level", "info"},
+        {"message", msg}
+    };
+    j.merge_patch(extra);
     std::cout << j.dump() << std::endl;
 }
 
-// ---------------------------------------------------------------------
-// Configuration structure (read from config.yaml)
-// ---------------------------------------------------------------------
-struct Config {
-    std::string model_path;
-    std::string vocab_path;          // BPE vocab JSON
-    std::string listen_addr = "0.0.0.0";
-    int listen_port = 8080;
-    int n_threads = 4;
-    size_t max_context = 2048;
-    size_t memory_limit_bytes = 2ULL << 30; // 2 GB default
-};
-
-inline Config load_config(const std::string& file) {
-    Config cfg;
-    YAML::Node root = YAML::LoadFile(file);
-    cfg.model_path = root["model_path"].as<std::string>();
-    cfg.vocab_path = root["vocab_path"].as<std::string>();
-    if (root["listen_addr"]) cfg.listen_addr = root["listen_addr"].as<std::string>();
-    if (root["listen_port"]) cfg.listen_port = root["listen_port"].as<int>();
-    if (root["n_threads"]) cfg.n_threads = root["n_threads"].as<int>();
-    if (root["max_context"]) cfg.max_context = root["max_context"].as<size_t>();
-    if (root["memory_limit_bytes"]) cfg.memory_limit_bytes = root["memory_limit_bytes"].as<size_t>();
-    return cfg;
+inline void log_error(const std::string& msg, const json& extra = json::object()) {
+    json j = {
+        {"timestamp", std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::system_clock::now().time_since_epoch())
+                          .count()},
+        {"level", "error"},
+        {"message", msg}
+    };
+    j.merge_patch(extra);
+    std::cerr << j.dump() << std::endl;
 }
 
-// ---------------------------------------------------------------------
-// ISO‑8601 timestamp helper (used in logs)
-// ---------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// ISO 8601 timestamp (for HTTP Date headers)
+// -----------------------------------------------------------------------------
 inline std::string iso8601_now() {
-    using namespace std::chrono;
-    auto now = system_clock::now();
-    std::time_t t = system_clock::to_time_t(now);
+    auto now = std::chrono::system_clock::now();
+    std::time_t t = std::chrono::system_clock::to_time_t(now);
     std::tm tm = *std::gmtime(&t);
     char buf[32];
     std::strftime(buf, sizeof(buf), "%FT%TZ", &tm);
-    return std::string(buf);
+    return buf;
 }
+
+// -----------------------------------------------------------------------------
+// Configuration (loaded from config.yaml)
+// -----------------------------------------------------------------------------
+struct Config {
+    // Model
+    std::string model_path;
+    std::string vocab_path;
+    std::string merges_path;        // BPE merges file (optional, for tokenizer)
+    
+    // Server
+    std::string listen_addr = "127.0.0.1";
+    int listen_port = 8080;
+    bool enable_tls = false;
+    std::string cert_file;
+    std::string key_file;
+    std::string api_key;            // if non‑empty, require X-API-Key header
+    
+    // Inference
+    int n_threads = 4;
+    size_t max_context = 2048;
+    float temperature_default = 0.8f;
+    float top_p_default = 0.95f;
+    int max_new_tokens_default = 128;
+    
+    // Sandbox
+    size_t memory_limit_bytes = 2ULL << 30;   // 2 GiB
+    bool sandbox_enabled = true;
+};
+
+Config load_config(const std::string& filename);
