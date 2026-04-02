@@ -1,0 +1,7 @@
+model_path: "./models/ggml‑model‑q4_0.bin"
+vocab_path: "./models/vocab.json"
+listen_addr: "0.0.0.0"
+listen_port: 8080
+n_threads: 4
+max_context: 2048
+memory_limit_bytes: 2147483648   # 2 GB
