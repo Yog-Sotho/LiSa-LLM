@@ -1,7 +1,20 @@
-model_path: "./models/ggml‑model‑q4_0.bin"
+# LiSa-LLM Configuration
+model_path: "./models/my_model.bin"
 vocab_path: "./models/vocab.json"
-listen_addr: "0.0.0.0"
+merges_path: "./models/merges.txt"
+
+listen_addr: "127.0.0.1"
 listen_port: 8080
+enable_tls: false
+cert_file: ""
+key_file: ""
+api_key: ""  # set to a random string to enable authentication
+
 n_threads: 4
 max_context: 2048
-memory_limit_bytes: 2147483648   # 2 GB
+temperature_default: 0.8
+top_p_default: 0.95
+max_new_tokens_default: 128
+
+memory_limit_bytes: 2147483648   # 2 GiB
+sandbox_enabled: true
