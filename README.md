@@ -42,6 +42,26 @@
 - CUDA toolkit ≥ 11.0 (for GPU support, optional)
 - pthread, dl, rt (standard on Linux)
 
+Install the following required libraries using your system package manager:
+
+**Ubuntu / Debian:**
+```bash
+sudo apt update
+sudo apt install build-essential cmake libssl-dev libyaml-cpp-dev libseccomp-dev
+```
+
+Fedora / RHEL:
+
+```bash
+sudo dnf install gcc-c++ cmake openssl-devel yaml-cpp-devel libseccomp-devel
+```
+
+Arch Linux:
+
+```bash
+sudo pacman -S base-devel cmake openssl yaml-cpp libseccomp
+```
+
 All other libraries (`ggml`, `cpp-httplib`, `nlohmann/json`) are bundled in `third_party/`.
 
 ### Compile
