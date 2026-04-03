@@ -23,6 +23,12 @@ int main(int argc, char* argv[]) {
     sigaction(SIGINT, &sa, nullptr);
     sigaction(SIGTERM, &sa, nullptr);
     
+    Model model;
+    model.load(cfg.model_path);
+    log_info("Model loaded", {{"n_layer", model.hparams().n_layer},
+                              {"n_embd", model.hparams().n_embd},
+                              {"gpu", model.is_gpu()}});
+    
     if (cfg.sandbox_enabled) {
         child_pid = fork();
         if (child_pid < 0) { perror("fork"); return 1; }
@@ -43,12 +49,6 @@ int main(int argc, char* argv[]) {
             return 0;
         }
     }
-    
-    Model model;
-    model.load(cfg.model_path);
-    log_info("Model loaded", {{"n_layer", model.hparams().n_layer},
-                              {"n_embd", model.hparams().n_embd},
-                              {"gpu", model.is_gpu()}});
     
     InferenceEngine engine(model, cfg);
     HttpServer server(engine, cfg);
