@@ -14,12 +14,13 @@ struct ModelHyperParams {
     int n_ctx = 2048;
     float eps = 1e-5f;
     float rope_theta = 10000.0f;
+    int eos_token_id = 2;  // added for metadata
 };
 
 class Model {
 public:
     Model() = default;
-    ~Model();
+    \~Model();
     Model(Model&& other) noexcept;
     Model& operator=(Model&& other) noexcept;
     Model(const Model&) = delete;
@@ -33,6 +34,7 @@ public:
     ggml_context* ctx() const { return ctx_; }
     bool is_gpu() const { return backend_ != nullptr && ggml_backend_is_cuda(backend_); }
     ggml_backend_t backend() const { return backend_; }
+    int get_eos_token_id() const { return hparams_.eos_token_id; }  // surgical addition
     
 private:
     ggml_context* ctx_ = nullptr;
