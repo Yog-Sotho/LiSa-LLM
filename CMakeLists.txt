@@ -7,10 +7,12 @@ project(LiSa-LLM VERSION 1.0.0 LANGUAGES C CXX)
 option(STATIC_BUILD "Link everything statically" OFF)
 option(ENABLE_TLS "Enable HTTPS support (requires OpenSSL)" ON)
 option(ENABLE_SANDBOX "Enable sandbox isolation (Linux only)" ON)
+option(ENABLE_CUDA "Enable NVIDIA GPU acceleration via GGML CUDA backend" OFF)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Wpedantic -Werror")
 
 if(STATIC_BUILD)
     set(CMAKE_FIND_LIBRARY_SUFFIXES .a)
@@ -25,21 +27,26 @@ endif()
 add_library(ggml STATIC
     third_party/ggml/ggml.c
     third_party/ggml/ggml-alloc.c
-    third_party/ggml/ggml-nn.c
+    third_party/ggml/ggml-cuda.cu
 )
 target_include_directories(ggml PUBLIC third_party/ggml)
 target_compile_definitions(ggml PRIVATE GGML_USE_CPU)
+if(ENABLE_CUDA)
+    enable_language(CUDA)
+    target_compile_definitions(ggml PRIVATE GGML_USE_CUDA)
+    target_link_libraries(ggml PRIVATE cudart)
+endif()
 
 # cpp-httplib (header only)
 add_library(httplib INTERFACE)
-target_include_directories(httplib INTERFACE third_party/cpp-httplib)
+target_include_directories(httplib INTERFACE third_party)
 
 # nlohmann/json (header only)
 add_library(json INTERFACE)
-target_include_directories(json INTERFACE third_party/json/single_include)
+target_include_directories(json INTERFACE third_party)
 
 # yaml-cpp (static or shared)
-find_package(yaml-cpp REQUIRED)
+find_package(yaml-cpp 0.7 REQUIRED)
 
 # OpenSSL (for TLS and SHA256)
 if(ENABLE_TLS)
