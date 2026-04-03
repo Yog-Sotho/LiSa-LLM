@@ -12,13 +12,14 @@
 class InferenceEngine {
 public:
     InferenceEngine(Model& model, const Config& cfg);
-    ~InferenceEngine();
+    \~InferenceEngine();
     
     std::vector<std::string> generate(const std::string& prompt,
                                       int max_new_tokens,
                                       float temperature,
                                       float top_p);
     
+    const Model& model() const { return model_; }  // added for build_graph
 private:
     Model& model_;
     const Config& cfg_;
