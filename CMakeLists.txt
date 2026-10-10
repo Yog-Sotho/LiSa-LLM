@@ -1,95 +1,81 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.28)
 project(LiSa-LLM VERSION 1.0.0 LANGUAGES C CXX)
+
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 # -----------------------------------------------------------------------------
 # Options
 # -----------------------------------------------------------------------------
-option(STATIC_BUILD "Link everything statically" OFF)
-option(ENABLE_TLS "Enable HTTPS support (requires OpenSSL)" ON)
-option(ENABLE_SANDBOX "Enable sandbox isolation (Linux only)" ON)
+option(LISA_TLS "Enable HTTPS support (requires OpenSSL)" ON)
+option(LISA_SANDBOX "Build the Linux sandbox (requires libseccomp)" ON)
+option(LISA_CUDA "Build the inference engine with CUDA offload" OFF)
+option(LISA_NATIVE "Optimise the engine for the build machine's CPU (disable for portable binaries)" ON)
+option(LISA_HARDENING "Compile with stack protector, FORTIFY_SOURCE, RELRO/now and PIE" ON)
+option(LISA_WARNINGS_AS_ERRORS "Treat compiler warnings in first-party code as errors" OFF)
+option(LISA_BUILD_TESTS "Build the unit tests" ${PROJECT_IS_TOP_LEVEL})
+set(LISA_SANITIZERS "" CACHE STRING "Comma-separated sanitizers for first-party code, e.g. address,undefined")
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-if(STATIC_BUILD)
-    set(CMAKE_FIND_LIBRARY_SUFFIXES .a)
-    set(BUILD_SHARED_LIBS OFF)
-    set(CMAKE_EXE_LINKER_FLAGS "-static -pthread")
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
-# -----------------------------------------------------------------------------
-# Dependencies (assume third_party contains the required libraries)
-# -----------------------------------------------------------------------------
-# GGML (static)
-add_library(ggml STATIC
-    third_party/ggml/ggml.c
-    third_party/ggml/ggml-alloc.c
-    third_party/ggml/ggml-nn.c
-)
-target_include_directories(ggml PUBLIC third_party/ggml)
-target_compile_definitions(ggml PRIVATE GGML_USE_CPU)
-
-# cpp-httplib (header only)
-add_library(httplib INTERFACE)
-target_include_directories(httplib INTERFACE third_party/cpp-httplib)
-
-# nlohmann/json (header only)
-add_library(json INTERFACE)
-target_include_directories(json INTERFACE third_party/json/single_include)
-
-# yaml-cpp (static or shared)
-find_package(yaml-cpp REQUIRED)
-
-# OpenSSL (for TLS and SHA256)
-if(ENABLE_TLS)
-    find_package(OpenSSL REQUIRED)
+if(LISA_SANDBOX AND NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    message(STATUS "LISA_SANDBOX is only supported on Linux; disabling it")
+    set(LISA_SANDBOX OFF)
 endif()
 
-# seccomp (only on Linux)
-if(ENABLE_SANDBOX AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    find_package(PkgConfig REQUIRED)
-    pkg_check_modules(LIBSECCOMP REQUIRED libseccomp)
-    add_definitions(-DHAVE_SECCOMP)
-endif()
+include(CompilerSettings)
+include(Dependencies)
 
 # -----------------------------------------------------------------------------
-# Source files
+# First-party code
 # -----------------------------------------------------------------------------
-set(SRCS
-    src/main.cpp
-    src/server.cpp
-    src/inference.cpp
-    src/model.cpp
-    src/tokenizer.cpp
-    src/sandbox.cpp
+configure_file(src/version.hpp.in "${CMAKE_CURRENT_BINARY_DIR}/generated/lisa/version.hpp" @ONLY)
+
+add_library(lisa_core STATIC
     src/utils.cpp
+    src/request.cpp
+    src/utf8.cpp
+    src/inference.cpp
+    src/server.cpp
+    src/sandbox.cpp
 )
-
-add_executable(lisa ${SRCS})
-target_include_directories(lisa PRIVATE src ${CMAKE_CURRENT_SOURCE_DIR}/third_party)
-
-target_link_libraries(lisa
+target_include_directories(lisa_core PUBLIC
+    src
+    "${CMAKE_CURRENT_BINARY_DIR}/generated"
+)
+target_link_libraries(lisa_core
+    PUBLIC
+        nlohmann_json::nlohmann_json
     PRIVATE
-    ggml
-    httplib
-    json
-    yaml-cpp
-    pthread
-    dl
-    rt
+        llama
+        httplib::httplib
+        yaml-cpp::yaml-cpp
+        Threads::Threads
 )
+lisa_configure_target(lisa_core)
 
-if(ENABLE_TLS)
-    target_link_libraries(lisa PRIVATE OpenSSL::SSL OpenSSL::Crypto)
-    target_compile_definitions(lisa PRIVATE LISA_ENABLE_TLS)
+if(LISA_SANDBOX)
+    target_link_libraries(lisa_core PRIVATE PkgConfig::LIBSECCOMP)
+    target_compile_definitions(lisa_core PRIVATE LISA_ENABLE_SANDBOX)
 endif()
 
-if(ENABLE_SANDBOX AND LIBSECCOMP_FOUND)
-    target_link_libraries(lisa PRIVATE ${LIBSECCOMP_LIBRARIES})
-    target_compile_definitions(lisa PRIVATE LISA_ENABLE_SANDBOX)
-    target_include_directories(lisa PRIVATE ${LIBSECCOMP_INCLUDE_DIRS})
-endif()
+add_executable(lisa src/main.cpp)
+target_link_libraries(lisa PRIVATE lisa_core)
+lisa_configure_target(lisa)
 
-# Install
 install(TARGETS lisa RUNTIME DESTINATION bin)
+
+if(LISA_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
+
+message(STATUS "LiSa-LLM ${PROJECT_VERSION}: TLS=${LISA_TLS} SANDBOX=${LISA_SANDBOX} CUDA=${LISA_CUDA} "
+               "NATIVE=${LISA_NATIVE} SANITIZERS='${LISA_SANITIZERS}' TESTS=${LISA_BUILD_TESTS}")

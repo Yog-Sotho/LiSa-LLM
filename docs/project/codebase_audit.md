@@ -9,6 +9,53 @@
 
 ---
 
+## Progress log
+
+### 2026-10-10 — P0 complete (build, engine, CI)
+
+Done:
+- **Engine:** Option A adopted. `libllama` from llama.cpp **v0.5.0** (commit `7fe450e1`) replaces
+  the custom GGUF parser, transformer graph and tokenizer (`model.*`, `tokenizer.*`,
+  `model_loader.cpp` and the partial `third_party/ggml` copy were deleted). Generation does one
+  prefill, then decodes token by token, detects EOG from the vocab and uses llama.cpp's sampler
+  chain (greedy at T=0). It assembles UTF-8 incrementally and stops when the client disconnects.
+- **Build:** CMake 3.28 rewrite. Dependencies are fetched by tag with the commit verified
+  (archives by SHA-256): cpp-httplib **v0.60.1** (built without compression support),
+  nlohmann/json 3.12.0, Catch2 3.16.0; yaml-cpp comes from the system or 0.9.0. Options
+  `LISA_CUDA/TLS/SANDBOX/NATIVE/HARDENING/SANITIZERS`; `-Wall -Wextra -Wpedantic -Wconversion
+  -Wshadow …` with `-Werror` in presets; hardening flags (stack protector, FORTIFY_SOURCE=3, CET,
+  full RELRO, PIE). `CMakePresets.json`: dev, asan-ubsan, tsan, release, cuda.
+- **Code:** `server.hpp`/`server.cpp` restored (real header, implementation in the `.cpp`);
+  everything is in namespace `lisa`. Request validation returns 400 for bad JSON, types or ranges
+  and for context overflow. 1 MiB body limit. TLS goes through `httplib::SSLServer`. The server
+  refuses the placeholder `changeme` key on non-loopback binds. `--config/--version/--help` CLI.
+  SIGINT/SIGTERM shut down cleanly. `waitpid` status is decoded. The config is validated.
+- **Tests:** 17 Catch2 cases (config, request validation, UTF-8, engine end-to-end on
+  `stories260K.gguf`) plus 3 CLI tests. Verified locally: green under GCC 13 and Clang 18,
+  ASan+UBSan and TSan (engine instrumented too), plus a concurrent-request TSan run of the live
+  server. clang-tidy (warnings as errors), cppcheck and hadolint are clean.
+- **CI:** `.github/workflows/ci.yml` runs a gcc/clang × asan-ubsan/release matrix plus TSan,
+  static analysis (clang-format, clang-tidy, cppcheck) and a Docker build with a smoke test.
+  `codeql.yml` runs CodeQL. Actions are pinned by commit SHA.
+- **Docker:** `Dockerfile` (renamed) on Ubuntu 24.04 with CPU or CUDA build args, a non-root
+  UID 10001, the runtime libraries, `ENTRYPOINT --config /etc/lisa/config.yaml` and a
+  container config that binds `0.0.0.0`. Image built and smoke-tested locally (141 MB).
+
+Deliberately left for later phases:
+- The sandbox still has the design flaws listed below. It now **defaults to off** and warns
+  that it doesn't isolate anything (P2).
+- API-key comparison isn't constant-time yet; no timeouts or rate limits; no `/readyz` or
+  `/metrics`; no OpenAI-compatible routes or chat templates (P1/P3).
+- Model SHA-256 verification is still not wired (P2).
+
+Estimated scores after P0 (self-assessed, not a full re-audit; "Build" assumes the first
+GitHub CI run is green): Build 8, Security 5, Concurrency 5, Principles 7, Dependencies 8,
+Observability 4, Lifecycle 6, Quality 7, Dead code 9 → **health ≈ 6.6/10, SOTA ≈ 4/10**.
+P0 went further than planned (engine swap, validation, graceful shutdown), so it is ahead of the
+trajectory table. The SOTA score stays low until P1–P4 add the OpenAI API, isolation and batching.
+
+---
+
 ## Executive Summary
 
 LiSa-LLM has a strong idea: a small C++ GGUF inference server where the model runs inside a

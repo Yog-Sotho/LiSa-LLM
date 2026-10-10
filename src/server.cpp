@@ -1,96 +1,125 @@
-#include "sandbox.hpp"
-#include <unistd.h>
-#include <sys/prctl.h>
-#include <sys/mount.h>
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <seccomp.h>
-#include <sched.h>
-#include <cstring>
-#include <fstream>
-#include <cerrno>
-#include <cstdlib>
+#include "server.hpp"
 
-#ifdef LISA_ENABLE_SANDBOX
+#include "request.hpp"
 
-static void drop_privileges() {
-    if (setgid(65534) != 0 || setuid(65534) != 0) {
-        perror("drop_privileges");
-        _exit(1);
-    }
+#include <httplib.h>
+#include <stdexcept>
+#include <string>
+#include <utility>
+
+namespace lisa {
+
+namespace {
+
+constexpr std::size_t kMaxRequestBodyBytes = 1U << 20;  // 1 MiB
+constexpr std::string_view kSseDone = "data: [DONE]\n\n";
+
+void send_json_error(httplib::Response& res, int status, const std::string& message) {
+    res.status = status;
+    res.set_content(json{{"error", message}}.dump(), "application/json");
 }
 
-static void install_seccomp() {
-    scmp_filter_ctx ctx = seccomp_init(SCMP_ACT_KILL);
-    if (!ctx) { perror("seccomp_init"); _exit(1); }
-    const int allowed[] = {
-        SCMP_SYS(read), SCMP_SYS(write), SCMP_SYS(close), SCMP_SYS(fstat),
-        SCMP_SYS(lseek), SCMP_SYS(mmap), SCMP_SYS(munmap), SCMP_SYS(brk),
-        SCMP_SYS(rt_sigaction), SCMP_SYS(rt_sigprocmask), SCMP_SYS(exit_group),
-        SCMP_SYS(getpid), SCMP_SYS(gettid), SCMP_SYS(getuid), SCMP_SYS(geteuid),
-        SCMP_SYS(getgid), SCMP_SYS(getegid), SCMP_SYS(arch_prctl),
-        SCMP_SYS(socket), SCMP_SYS(bind), SCMP_SYS(listen), SCMP_SYS(accept4),
-        SCMP_SYS(recvfrom), SCMP_SYS(sendto), SCMP_SYS(epoll_create1),
-        SCMP_SYS(epoll_ctl), SCMP_SYS(epoll_wait), SCMP_SYS(getsockname),
-        SCMP_SYS(setsockopt), SCMP_SYS(getsockopt), SCMP_SYS(connect)
-    };
-    for (int sys : allowed) {
-        if (seccomp_rule_add(ctx, SCMP_ACT_ALLOW, sys, 0) < 0) {
-            perror("seccomp_rule_add");
-            seccomp_release(ctx);
-            _exit(1);
+bool write_sse(httplib::DataSink& sink, const json& payload) {
+    const std::string event =
+        "data: " + payload.dump(-1, ' ', false, json::error_handler_t::replace) + "\n\n";
+    return sink.write(event.data(), event.size());
+}
+
+std::unique_ptr<httplib::Server> make_server(const Config& cfg) {
+    if (!cfg.enable_tls) {
+        return std::make_unique<httplib::Server>();
+    }
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+    auto server = std::make_unique<httplib::SSLServer>(cfg.cert_file.c_str(), cfg.key_file.c_str());
+    if (!server->is_valid()) {
+        throw std::runtime_error("TLS initialisation failed: check cert_file and key_file");
+    }
+    return server;
+#else
+    throw std::runtime_error("enable_tls is set but this binary was built with LISA_TLS=OFF");
+#endif
+}
+
+}  // namespace
+
+HttpServer::HttpServer(InferenceEngine& engine, Config cfg)
+    : engine_(engine), cfg_(std::move(cfg)), server_(make_server(cfg_)) {
+    server_->set_payload_max_length(kMaxRequestBodyBytes);
+    register_routes();
+}
+
+HttpServer::~HttpServer() = default;
+
+void HttpServer::register_routes() {
+    server_->Get("/healthz", [](const httplib::Request&, httplib::Response& res) {
+        res.set_content(R"({"status":"ok"})", "application/json");
+    });
+
+    server_->Post("/v1/completions", [this](const httplib::Request& req, httplib::Response& res) {
+        if (!cfg_.api_key.empty()) {
+            if (req.get_header_value("X-API-Key") != cfg_.api_key) {
+                send_json_error(res, 401, "unauthorized");
+                return;
+            }
         }
-    }
-    if (seccomp_load(ctx) < 0) {
-        perror("seccomp_load");
-        seccomp_release(ctx);
-        _exit(1);
-    }
-    seccomp_release(ctx);
+
+        CompletionRequest completion;
+        std::vector<Token> prompt_tokens;
+        try {
+            completion = parse_completion_request(req.body, cfg_);
+            prompt_tokens = engine_.tokenize(completion.prompt);
+        } catch (const std::invalid_argument& e) {
+            send_json_error(res, 400, e.what());
+            return;
+        }
+        const std::size_t needed =
+            prompt_tokens.size() + static_cast<std::size_t>(completion.max_new_tokens);
+        if (needed > engine_.info().n_ctx) {
+            send_json_error(res, 400,
+                            "prompt (" + std::to_string(prompt_tokens.size()) +
+                                " tokens) plus max_new_tokens exceeds the context window of " +
+                                std::to_string(engine_.info().n_ctx) + " tokens");
+            return;
+        }
+
+        res.set_header("Cache-Control", "no-cache");
+        res.set_header("X-Accel-Buffering", "no");
+        res.set_chunked_content_provider(
+            "text/event-stream",
+            [this, completion = std::move(completion), prompt_tokens = std::move(prompt_tokens)](
+                std::size_t /*offset*/, httplib::DataSink& sink) {
+                try {
+                    engine_.generate(prompt_tokens, completion, [&sink](std::string_view piece) {
+                        return sink.is_writable() &&
+                               write_sse(sink, json{{"token", std::string(piece)}});
+                    });
+                } catch (const std::exception& e) {
+                    log_error("generation failed", {{"error", e.what()}});
+                    write_sse(sink, json{{"error", "generation failed"}});
+                }
+                sink.write(kSseDone.data(), kSseDone.size());
+                sink.done();
+                return true;
+            });
+    });
 }
 
-static void setup_memory_limit(size_t limit_bytes) {
-    pid_t pid = getpid();
-    std::string cgroup_path = "/sys/fs/cgroup/lisa_" + std::to_string(pid);
-    if (mkdir(cgroup_path.c_str(), 0755) != 0 && errno != EEXIST) {
-        perror("mkdir cgroup");
+void HttpServer::run() {
+    if (stop_requested_) {
         return;
     }
-    std::ofstream procs(cgroup_path + "/cgroup.procs");
-    if (procs) {
-        procs << pid << std::endl;
-        procs.close();
-        std::ofstream max(cgroup_path + "/memory.max");
-        if (max) max << limit_bytes << std::endl;
+    log_info("Starting server",
+             {{"bind", cfg_.listen_addr + ":" + std::to_string(cfg_.listen_port)},
+              {"tls", cfg_.enable_tls}});
+    if (!server_->listen(cfg_.listen_addr, cfg_.listen_port) && !stop_requested_) {
+        throw std::runtime_error("cannot listen on " + cfg_.listen_addr + ":" +
+                                 std::to_string(cfg_.listen_port));
     }
 }
 
-static void pivot_root_sandbox() {
-    char tmpdir[] = "/tmp/lisa_sandbox_XXXXXX";
-    if (!mkdtemp(tmpdir)) { perror("mkdtemp"); _exit(1); }
-    if (mount(tmpdir, tmpdir, "tmpfs", MS_NOSUID | MS_NODEV, nullptr) != 0) {
-        perror("mount tmpfs"); _exit(1);
-    }
-    if (chdir(tmpdir) != 0) { perror("chdir"); _exit(1); }
-    if (pivot_root(".", ".") != 0) { perror("pivot_root"); _exit(1); }
-    if (chroot(".") != 0) { perror("chroot"); _exit(1); }
-    if (umount2("/", MNT_DETACH) != 0) { /* ignore */ }
+void HttpServer::stop() noexcept {
+    stop_requested_ = true;
+    server_->stop();
 }
 
-int sandbox_init(const Config& cfg) {
-    if (unshare(CLONE_NEWUSER | CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWNET) != 0) {
-        perror("unshare"); return 1;
-    }
-    if (mount(nullptr, "/", nullptr, MS_REC | MS_PRIVATE, nullptr) != 0) {
-        perror("mount private");
-    }
-    if (cfg.memory_limit_bytes > 0) setup_memory_limit(cfg.memory_limit_bytes);
-    pivot_root_sandbox();
-    drop_privileges();
-    install_seccomp();
-    return 0;
-}
-
-#else
-int sandbox_init(const Config& cfg) { return 0; }
-#endif
+}  // namespace lisa

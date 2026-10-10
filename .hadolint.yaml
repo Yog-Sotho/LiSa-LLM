@@ -1,0 +1,4 @@
+ignored:
+  # Pinning distro package versions breaks on every Ubuntu security update; the base
+  # images are pinned instead and rebuilt regularly.
+  - DL3008
