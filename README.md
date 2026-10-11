@@ -17,19 +17,23 @@
 ## Project status
 
 LiSa-LLM is being rebuilt following the [codebase audit](docs/project/codebase_audit.md).
-**Phase P0 is done**: the project builds reproducibly, inference runs on
-[llama.cpp](https://github.com/ggml-org/llama.cpp)'s `libllama`, and CI runs sanitizers,
-static analysis and end-to-end model tests. Next up: OpenAI-compatible API and chat
-templates (P1), then a sandbox that really isolates the model (P2).
+**Phases P0 and P1 are done**: the project builds reproducibly, inference runs on
+[llama.cpp](https://github.com/ggml-org/llama.cpp)'s `libllama`, the API is OpenAI-compatible
+with chat templates, and CI runs sanitizers, static analysis and end-to-end model and HTTP
+tests. Next up: a sandbox that really isolates the model (P2).
 
 ## Features
 
 - 🧠 **Any GGUF model llama.cpp supports** – LLaMA 2/3, Mistral, Qwen, Gemma, Phi and more,
   every quantisation type; the tokenizer is read from the GGUF file.
 - ⚡ **GPU offload** – CUDA build option with configurable layer count (`gpu_layers`).
+- 🔌 **OpenAI-compatible API** – `/v1/chat/completions`, `/v1/completions`, `/v1/models`; works
+  with the official OpenAI SDKs. Chat templates come from the GGUF file.
 - 📡 **Real-time streaming** via Server-Sent Events; generation stops when the client disconnects.
-- 🌐 **HTTP API** with optional TLS and API-key authentication; request validation and a
-  1 MiB body limit.
+- 🎛️ **Sampling** – temperature, top-p, top-k, min-p, presence/frequency/repeat penalties,
+  seed and stop sequences.
+- 🌐 **HTTPS and API keys** – optional TLS, Bearer/`X-API-Key` authentication with
+  constant-time comparison, strict request validation and a 1 MiB body limit.
 - 🧪 **Tested** – unit tests plus end-to-end generation tests against a real model under
   ASan/UBSan and TSan; clang-tidy, cppcheck and CodeQL in CI.
 - 🔒 **Sandbox (experimental, off by default)** – namespaces, seccomp, cgroup v2 and
@@ -106,32 +110,56 @@ You should see logs like:
 
 `SIGINT`/`SIGTERM` stop the server cleanly.
 
-### Test the API
+### Use the API
+
+LiSa-LLM speaks the **OpenAI API**, so existing OpenAI clients and SDKs work unchanged:
+
+| Route | Purpose |
+|---|---|
+| `POST /v1/chat/completions` | Chat, formatted with the model's chat template |
+| `POST /v1/completions` | Raw text completion |
+| `GET /v1/models` | The loaded model |
+| `GET /healthz` | Liveness check (no key needed) |
+
+Authenticate with `Authorization: Bearer <api_key>` (or `X-API-Key: <api_key>`).
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8080/v1", api_key="changeme")
+reply = client.chat.completions.create(
+    model="llama-2-7b-chat.Q4_K_M",            # any value works; one model is loaded
+    messages=[{"role": "user", "content": "Write a haiku about sandboxes."}],
+    max_tokens=100,
+    stream=True,
+)
+for chunk in reply:
+    if chunk.choices and chunk.choices[0].delta.content:
+        print(chunk.choices[0].delta.content, end="")
+```
 
 ```bash
-# Health check
-curl http://localhost:8080/healthz
-
-# Generate a completion (streaming)
-curl -N -X POST http://localhost:8080/v1/completions \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: changeme" \
-  -d '{"prompt": "Once upon a time", "max_new_tokens": 100, "temperature": 0.7, "top_p": 0.9}'
+curl http://localhost:8080/v1/chat/completions \
+  -H "Authorization: Bearer changeme" -H "Content-Type: application/json" \
+  -d '{"messages": [{"role": "user", "content": "Hello!"}], "max_tokens": 50}'
 ```
 
-The response is a Server-Sent Events stream:
+**Supported request fields:** `messages` (roles `system`/`developer`, `user`, `assistant`;
+text content) or `prompt`; `max_tokens` / `max_completion_tokens`; `temperature` (0 = greedy);
+`top_p`; `presence_penalty`; `frequency_penalty`; `seed`; `stop` (up to 4 sequences);
+`stream` and `stream_options.include_usage`. llama.cpp extensions: `top_k`, `min_p`,
+`repeat_penalty`. Responses include `usage` and `finish_reason` (`stop` / `length`).
 
-```
-data: {"token":","}
-data: {"token":" there"}
-data: {"token":" was"}
-...
-data: [DONE]
-```
+Features the server doesn't implement (`n` > 1, `logprobs`, `tools`, JSON `response_format`,
+`logit_bias`, `echo`, `suffix`) are rejected with `400` rather than silently ignored. Errors
+use OpenAI's format: `{"error": {"message", "type", "param", "code"}}`. Without `max_tokens`,
+generation is limited by `max_new_tokens_default` and the free context.
 
-Request fields: `prompt` (required), `max_new_tokens` (1 … `max_context`), `temperature`
-(0 … 2, 0 = greedy), `top_p` (0 < p ≤ 1). Invalid requests and prompts that don't fit the
-context window get `400` with a JSON `error`.
+**Chat templates.** The template stored in the GGUF file is detected automatically (54
+built-in formats: Llama 2/3/4, ChatML, Mistral, Gemma, Phi, DeepSeek, Qwen, Command-R, …). Set
+`chat_template` in the config to force one (e.g. `llama3`, `chatml`); models without a
+template fall back to ChatML. Message content that spells a special token (e.g.
+`<|im_end|>`) is rejected, so users cannot forge role boundaries.
 
 ### Docker
 
@@ -152,6 +180,8 @@ See [`config.yaml`](config.yaml) for every option with comments:
 
 ```yaml
 model_path: "./models/model.gguf"
+model_alias: ""                  # model id in API responses; default: file name
+chat_template: ""                # built-in template name; default: from the GGUF file
 
 listen_addr: "127.0.0.1"
 listen_port: 8080
@@ -183,7 +213,8 @@ gpu_layers: -1                   # -1 = all layers (CUDA builds)
 ## Limitations
 
 - Requests are served one at a time (continuous batching is planned, roadmap P4).
-- Raw completions only; chat templates and the OpenAI-compatible API come in P1/P3.
+- Chat templates use llama.cpp's 54 built-in formats; arbitrary Jinja templates, tool calls
+  and structured (JSON) output are not supported yet.
 - GPU support is NVIDIA CUDA only for now (llama.cpp's Vulkan/Metal/ROCm backends are not wired up).
 
 Contributing

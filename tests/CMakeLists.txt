@@ -7,9 +7,12 @@ add_executable(lisa_tests
     test_config.cpp
     test_request.cpp
     test_utf8.cpp
+    test_stop.cpp
+    test_openai.cpp
     test_engine.cpp
+    test_server.cpp
 )
-target_link_libraries(lisa_tests PRIVATE lisa_core Catch2::Catch2WithMain)
+target_link_libraries(lisa_tests PRIVATE lisa_core httplib::httplib Catch2::Catch2WithMain)
 lisa_configure_target(lisa_tests)
 
 FetchContent_GetProperties(Catch2 SOURCE_DIR catch2_source_dir)

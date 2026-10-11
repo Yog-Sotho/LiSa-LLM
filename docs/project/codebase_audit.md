@@ -11,6 +11,43 @@
 
 ## Progress log
 
+### 2026-10-11 — P1 complete (OpenAI-compatible API, chat templates, sampling)
+
+Done:
+- **API:** `/v1/chat/completions`, `/v1/completions` (both streaming and non-streaming, with
+  `usage` and `finish_reason`, plus `stream_options.include_usage`) and `/v1/models`. Errors use
+  OpenAI's `{"error": {message, type, param, code}}` shape, including JSON 404/413/500 bodies.
+  OpenAI features that aren't implemented (`n`>1, `logprobs`, `tools`, JSON `response_format`,
+  `logit_bias`, `echo`, `suffix`) return 400 instead of being silently ignored. Checked against
+  the official OpenAI Python SDK 3.28.
+- **Chat templates:** chosen in this order: `chat_template` from the config (any of libllama's
+  54 built-in names), then the template stored in the GGUF (auto-detected), then a ChatML
+  fallback with a warning. Full Jinja was considered and left out: llama.cpp keeps it in
+  `common/` behind an unstable internal API.
+- **Prompt-injection guard:** message content that spells a special token (detected by
+  tokenizing with and without special-token parsing) is rejected, so users can't forge role
+  boundaries. The template's own markers are still parsed as special tokens.
+- **Sampling:** llama.cpp sampler chain penalties → top-k → top-p → min-p → temperature → seeded
+  draw (greedy at T=0). Supports `presence_penalty`, `frequency_penalty`, `repeat_penalty`,
+  `top_k`, `min_p` and `seed`. Up to 4 `stop` sequences, held back across token boundaries so
+  they're never emitted.
+- **Context handling:** an explicit `max_tokens` that doesn't fit returns 400
+  `context_length_exceeded`. Without one, the default is capped to the free context, as OpenAI
+  does.
+- **Auth (pulled forward from P3):** `Authorization: Bearer` as well as `X-API-Key`,
+  constant-time comparison, on every `/v1/*` route.
+- **Fix found by the new tests:** cpp-httplib's default `getaddrinfo_a` runs on threads glibc
+  creates internally, and ThreadSanitizer crashes on them. It's now built with
+  `HTTPLIB_USE_NON_BLOCKING_GETADDRINFO=OFF`.
+- **Tests:** 42 Catch2 cases (325 assertions): request parsing, stop matcher, OpenAI body shapes,
+  engine (seeded sampling, stop sequences, chat templates, injection guard), and HTTP tests
+  against a live server on an ephemeral port. Green under GCC, Clang, ASan+UBSan and TSan, plus
+  a concurrent-load run under TSan.
+
+Estimated scores after P1 (self-assessed): Security 6, Code Principles 8, Observability 4,
+Lifecycle 6, Code Quality 8 → **health ≈ 7.0/10, SOTA ≈ 5.5/10**. P2 (the sandbox redesign) is
+next and is the biggest remaining gap.
+
 ### 2026-10-10 — P0 complete (build, engine, CI)
 
 Done:

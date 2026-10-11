@@ -21,14 +21,15 @@ using Token = std::int32_t;  // == llama_token
 
 struct ModelInfo {
     std::string description;
+    std::string chat_template;  // how chat prompts are formatted (for logs)
     std::int32_t n_layer = 0;
     std::int32_t n_ctx_train = 0;
-    std::uint32_t n_ctx = 0;  // context window actually allocated
+    std::uint32_t n_ctx = 0;  // context window requests are limited to
     std::uint64_t n_params = 0;
     bool gpu_offload = false;
 };
 
-enum class StopReason : std::uint8_t { eos, length, cancelled };
+enum class StopReason : std::uint8_t { eos, stop_sequence, length, cancelled };
 
 struct GenerationResult {
     std::size_t prompt_tokens = 0;
@@ -43,7 +44,8 @@ public:
     // Receives UTF-8-complete text; return false to stop generating (e.g. client gone).
     using PieceCallback = std::function<bool(std::string_view piece)>;
 
-    // Loads the GGUF model in cfg.model_path. Throws std::runtime_error on failure.
+    // Loads the GGUF model in cfg.model_path and selects the chat template
+    // (cfg.chat_template, else the model's own, else ChatML). Throws std::runtime_error.
     explicit InferenceEngine(const Config& cfg);
     ~InferenceEngine();
 
@@ -52,14 +54,19 @@ public:
     InferenceEngine(InferenceEngine&&) = delete;
     InferenceEngine& operator=(InferenceEngine&&) = delete;
 
-    // Tokenises a user prompt (BOS added as the model requires; special-token text is
-    // treated as plain text). Thread-safe. Throws std::invalid_argument.
+    // Tokenises a raw completion prompt. Special-token text (e.g. "</s>") is treated as
+    // plain text. Thread-safe. Throws RequestError.
     [[nodiscard]] std::vector<Token> tokenize(std::string_view text) const;
 
-    // Generates a completion for `prompt_tokens`. Throws std::invalid_argument when the
-    // request does not fit the context window, std::runtime_error on engine failure.
+    // Formats `messages` with the chat template and tokenises the result. Message
+    // contents that contain special-token text are rejected, so a user cannot forge
+    // role boundaries. Thread-safe. Throws RequestError.
+    [[nodiscard]] std::vector<Token> tokenize_chat(const std::vector<ChatMessage>& messages) const;
+
+    // Generates a completion for `prompt_tokens`. Throws RequestError when the request
+    // does not fit the context window, std::runtime_error on engine failure.
     GenerationResult generate(const std::vector<Token>& prompt_tokens,
-                              const CompletionRequest& request, const PieceCallback& on_piece);
+                              const GenerationParams& params, const PieceCallback& on_piece);
 
     [[nodiscard]] const ModelInfo& info() const noexcept { return info_; }
 
@@ -71,11 +78,16 @@ private:
         void operator()(llama_context* ctx) const noexcept;
     };
 
+    [[nodiscard]] std::vector<Token> tokenize_text(std::string_view text, bool add_special,
+                                                   bool parse_special) const;
+    [[nodiscard]] std::string apply_chat_template(const std::vector<ChatMessage>& messages) const;
     [[nodiscard]] std::string token_to_piece(Token token) const;
+    void select_chat_template(const std::string& configured);
 
     std::unique_ptr<llama_model, ModelDeleter> model_;
     std::unique_ptr<llama_context, ContextDeleter> ctx_;
     const llama_vocab* vocab_ = nullptr;
+    std::string chat_template_;  // template text or built-in name for llama_chat_apply_template
     ModelInfo info_;
     std::mutex mutex_;  // guards ctx_ (one generation at a time)
 };

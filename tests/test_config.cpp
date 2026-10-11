@@ -47,6 +47,8 @@ TEST_CASE("load_config applies defaults for optional keys", "[config]") {
 TEST_CASE("load_config reads every supported key", "[config]") {
     const TempConfig file(R"(
 model_path: /models/x.gguf
+model_alias: my-model
+chat_template: llama3
 listen_addr: 0.0.0.0
 listen_port: 9000
 api_key: secret
@@ -62,6 +64,8 @@ gpu_layers: 10
 )");
     const lisa::Config cfg = lisa::load_config(file.path());
 
+    CHECK(cfg.model_alias == "my-model");
+    CHECK(cfg.chat_template == "llama3");
     CHECK(cfg.listen_addr == "0.0.0.0");
     CHECK(cfg.listen_port == 9000);
     CHECK(cfg.api_key == "secret");
@@ -117,4 +121,13 @@ TEST_CASE("is_loopback_address", "[config]") {
     CHECK_FALSE(lisa::is_loopback_address("0.0.0.0"));
     CHECK_FALSE(lisa::is_loopback_address("192.168.1.10"));
     CHECK_FALSE(lisa::is_loopback_address("::"));
+}
+
+TEST_CASE("constant_time_equals", "[config]") {
+    CHECK(lisa::constant_time_equals("secret", "secret"));
+    CHECK_FALSE(lisa::constant_time_equals("secreT", "secret"));
+    CHECK_FALSE(lisa::constant_time_equals("secret-but-longer", "secret"));
+    CHECK_FALSE(lisa::constant_time_equals("sec", "secret"));
+    CHECK_FALSE(lisa::constant_time_equals("", "secret"));
+    CHECK(lisa::constant_time_equals("", ""));
 }

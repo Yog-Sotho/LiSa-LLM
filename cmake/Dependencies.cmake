@@ -65,6 +65,9 @@ set(HTTPLIB_REQUIRE_OPENSSL ${LISA_TLS})
 set(HTTPLIB_USE_ZLIB_IF_AVAILABLE OFF)
 set(HTTPLIB_USE_BROTLI_IF_AVAILABLE OFF)
 set(HTTPLIB_USE_ZSTD_IF_AVAILABLE OFF)
+# getaddrinfo_a runs lookups on threads glibc creates internally, which ThreadSanitizer
+# cannot track (it crashes); the server only resolves its bind address once anyway.
+set(HTTPLIB_USE_NON_BLOCKING_GETADDRINFO OFF)
 lisa_fetch_git(httplib
     https://github.com/yhirose/cpp-httplib.git
     v0.60.1

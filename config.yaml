@@ -1,21 +1,26 @@
 # LiSa-LLM configuration. Start with: lisa --config config.yaml
 # The tokenizer is read from the GGUF file; no vocab/merges files are needed.
 model_path: "./models/model.gguf"
+model_alias: ""     # model id reported by /v1/models and responses; default: file name
+# Chat prompt format: empty = the GGUF file's template (ChatML if it has none), or a
+# built-in name such as llama3, llama2, chatml, mistral-v7, gemma, phi4, deepseek3.
+chat_template: ""
 
 listen_addr: "127.0.0.1"
 listen_port: 8080
 enable_tls: false
 cert_file: ""
 key_file: ""
-# Required by clients as the X-API-Key header. Empty disables authentication.
+# Clients send it as "Authorization: Bearer <key>" or "X-API-Key: <key>".
+# Empty disables authentication.
 # The server refuses to listen on a non-loopback address with this placeholder.
 api_key: "changeme"
 
 n_threads: 8
 max_context: 4096            # capped at the model's training context
-temperature_default: 0.8     # 0 = greedy
+temperature_default: 0.8     # 0 = greedy; used when a request omits temperature
 top_p_default: 0.95
-max_new_tokens_default: 256
+max_new_tokens_default: 256  # when a request omits max_tokens (capped by free context)
 
 memory_limit_bytes: 4294967296  # 4 GiB (sandbox only)
 # Experimental and not isolating yet; being redesigned (docs/project/codebase_audit.md, P2).
