@@ -18,6 +18,9 @@ set(LISA_SANITIZERS "" CACHE STRING "Comma-separated sanitizers for first-party 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+# No C++20 modules here. Scanning would add @*.modmap response files to
+# compile_commands.json that only exist after a build, which breaks clang-tidy.
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 

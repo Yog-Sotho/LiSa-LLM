@@ -36,7 +36,7 @@ Done:
   server. clang-tidy (warnings as errors), cppcheck and hadolint are clean.
 - **CI:** `.github/workflows/ci.yml` runs a gcc/clang × asan-ubsan/release matrix plus TSan,
   static analysis (clang-format, clang-tidy, cppcheck) and a Docker build with a smoke test.
-  `codeql.yml` runs CodeQL. Actions are pinned by commit SHA.
+  CodeQL runs through the repository's GitHub default setup. Actions are pinned by commit SHA.
 - **Docker:** `Dockerfile` (renamed) on Ubuntu 24.04 with CPU or CUDA build args, a non-root
   UID 10001, the runtime libraries, `ENTRYPOINT --config /etc/lisa/config.yaml` and a
   container config that binds `0.0.0.0`. Image built and smoke-tested locally (141 MB).
