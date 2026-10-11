@@ -97,6 +97,7 @@ int run_server(const lisa::Config& cfg) {
     }
     const lisa::ModelInfo& info = engine->info();
     lisa::log_info("Model loaded", {{"model", info.description},
+                                    {"chat_template", info.chat_template},
                                     {"n_layer", info.n_layer},
                                     {"n_params", info.n_params},
                                     {"n_ctx", info.n_ctx},

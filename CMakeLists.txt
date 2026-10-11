@@ -44,6 +44,8 @@ configure_file(src/version.hpp.in "${CMAKE_CURRENT_BINARY_DIR}/generated/lisa/ve
 add_library(lisa_core STATIC
     src/utils.cpp
     src/request.cpp
+    src/stop.cpp
+    src/openai.cpp
     src/utf8.cpp
     src/inference.cpp
     src/server.cpp

@@ -41,6 +41,8 @@ inline void log_error(const std::string& msg, const json& extra = json::object()
 
 struct Config {
     std::string model_path;
+    std::string model_alias;    // model id reported by the API; default: model file name
+    std::string chat_template;  // built-in template name; empty = from the model (else ChatML)
     std::string listen_addr = "127.0.0.1";
     int listen_port = 8080;
     bool enable_tls = false;
@@ -62,6 +64,10 @@ struct Config {
 // Loads and validates a YAML config file. Throws std::runtime_error with a readable
 // message on I/O, syntax or validation errors.
 [[nodiscard]] Config load_config(const std::string& filename);
+
+// Compares a client-supplied secret with the expected one in time that depends only on
+// the expected secret's length.
+[[nodiscard]] bool constant_time_equals(std::string_view given, std::string_view expected) noexcept;
 
 // True when `addr` only accepts connections from the local machine.
 [[nodiscard]] bool is_loopback_address(std::string_view addr) noexcept;

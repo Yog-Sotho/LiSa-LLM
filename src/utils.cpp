@@ -53,6 +53,8 @@ Config load_config(const std::string& filename) {
     Config cfg;
     try {
         read_optional(root, "model_path", cfg.model_path);
+        read_optional(root, "model_alias", cfg.model_alias);
+        read_optional(root, "chat_template", cfg.chat_template);
         read_optional(root, "listen_addr", cfg.listen_addr);
         read_optional(root, "listen_port", cfg.listen_port);
         read_optional(root, "enable_tls", cfg.enable_tls);
@@ -81,6 +83,15 @@ Config load_config(const std::string& filename) {
 
     validate(cfg);
     return cfg;
+}
+
+bool constant_time_equals(std::string_view given, std::string_view expected) noexcept {
+    std::size_t diff = given.size() ^ expected.size();
+    for (std::size_t i = 0; i < expected.size(); ++i) {
+        const auto g = i < given.size() ? static_cast<unsigned char>(given[i]) : 0U;
+        diff |= g ^ static_cast<unsigned char>(expected[i]);
+    }
+    return diff == 0;
 }
 
 bool is_loopback_address(std::string_view addr) noexcept {
