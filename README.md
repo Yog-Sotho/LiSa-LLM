@@ -3,7 +3,7 @@
   <img src="assets/Logo_LiSa.png" alt="LiSa Logo" width="420" style="margin-bottom: 20px;">
   <h1>LiSa-LLM – Lightweight, Sandboxed LLM Inference Server</h1>
   <p><em>“Because your cat‑sized model deserves a lion‑sized sandbox.”</em></p>
-  <p><strong>LiSa-LLM is a production‑grade, self‑contained C++20 inference server for transformer models, using <strong>GGML with CUDA</strong> for tensor computations. It features a hardened Linux sandbox (namespaces, seccomp, cgroup v2, pivot_root), API key authentication, TLS support, streaming Server‑Sent Events, and full GPU acceleration. Perfect for edge deployments or whenever you need to run untrusted models without losing sleep.</strong></p>
+  <p><strong>LiSa-LLM is a small, self-contained C++20 inference server for GGUF models, built on llama.cpp's <code>libllama</code> with optional CUDA offload. It provides streaming Server-Sent Events, API-key authentication and TLS. A hardened Linux sandbox for running untrusted models is under active development (see Project status).</strong></p>
   <p>
     <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT">
     <img src="https://img.shields.io/badge/C++20-ready-blue.svg" alt="C++20 Ready">
@@ -14,121 +14,144 @@
   </p>
 </div>
 
+## Project status
+
+LiSa-LLM is being rebuilt following the [codebase audit](docs/project/codebase_audit.md).
+**Phase P0 is done**: the project builds reproducibly, inference runs on
+[llama.cpp](https://github.com/ggml-org/llama.cpp)'s `libllama`, and CI runs sanitizers,
+static analysis and end-to-end model tests. Next up: OpenAI-compatible API and chat
+templates (P1), then a sandbox that really isolates the model (P2).
+
 ## Features
 
-- 🧠 **Full transformer** – multi‑head attention, RoPE, SwiGLU, KV cache, layer norm, residual connections – all implemented with GGML.
-- 🔒 **Hardened sandbox** – the model runs in a separate process with:
-  - User, mount, PID, and network namespaces
-  - `pivot_root` into an empty tmpfs
-  - Strict seccomp‑bpf whitelist (only ~30 syscalls)
-  - cgroup v2 memory limit
-  - Drop to `nobody` privileges
-- 🌐 **HTTP API** with optional TLS (mTLS ready) and API key authentication.
-- 📡 **Real‑time streaming** via Server‑Sent Events (SSE).
-- ⚡ **GPU acceleration** – automatic CUDA offloading (configurable layer count).
-- 📦 **No external ML frameworks** – just GGML, C++20, and a few header‑only libs.
-- 🔁 **Model integrity checks** (SHA‑256) before loading.
-- 💾 **GGUF format support** – load any LLaMA‑based model out of the box.
+- 🧠 **Any GGUF model llama.cpp supports** – LLaMA 2/3, Mistral, Qwen, Gemma, Phi and more,
+  every quantisation type; the tokenizer is read from the GGUF file.
+- ⚡ **GPU offload** – CUDA build option with configurable layer count (`gpu_layers`).
+- 📡 **Real-time streaming** via Server-Sent Events; generation stops when the client disconnects.
+- 🌐 **HTTP API** with optional TLS and API-key authentication; request validation and a
+  1 MiB body limit.
+- 🧪 **Tested** – unit tests plus end-to-end generation tests against a real model under
+  ASan/UBSan and TSan; clang-tidy, cppcheck and CodeQL in CI.
+- 🔒 **Sandbox (experimental, off by default)** – namespaces, seccomp, cgroup v2 and
+  `pivot_root` code exists but **does not isolate the server yet**; it is being redesigned
+  as a broker/worker split (roadmap P2).
 
 ## Build & Run
 
 ### Dependencies
 
-- CMake ≥ 3.20
-- C++20 compiler (GCC 11+, Clang 14+)
-- OpenSSL (for TLS and SHA‑256)
-- libseccomp (Linux only, for sandbox)
-- yaml-cpp
-- CUDA toolkit ≥ 11.0 (for GPU support, optional)
-- pthread, dl, rt (standard on Linux)
-
-Install the following required libraries using your system package manager:
+- CMake ≥ 3.28 and Ninja (or Make)
+- C++20 compiler (GCC 13+, Clang 18+)
+- yaml-cpp (built from source if not installed)
+- OpenSSL (for TLS; `-DLISA_TLS=OFF` to build without)
+- libseccomp (for the sandbox; `-DLISA_SANDBOX=OFF` to build without)
+- CUDA toolkit (optional, for `-DLISA_CUDA=ON`)
 
 **Ubuntu / Debian:**
 ```bash
 sudo apt update
-sudo apt install build-essential cmake libssl-dev libyaml-cpp-dev libseccomp-dev
+sudo apt install build-essential cmake ninja-build pkg-config libssl-dev libyaml-cpp-dev libseccomp-dev
 ```
 
-Fedora / RHEL:
-
+**Fedora / RHEL:**
 ```bash
-sudo dnf install gcc-c++ cmake openssl-devel yaml-cpp-devel libseccomp-devel
+sudo dnf install gcc-c++ cmake ninja-build openssl-devel yaml-cpp-devel libseccomp-devel
 ```
 
-Arch Linux:
-
+**Arch Linux:**
 ```bash
-sudo pacman -S base-devel cmake openssl yaml-cpp libseccomp
+sudo pacman -S base-devel cmake ninja openssl yaml-cpp libseccomp
 ```
 
-All other libraries (`ggml`, `cpp-httplib`, `nlohmann/json`) are bundled in `third_party/`.
+llama.cpp, cpp-httplib, nlohmann/json and Catch2 are fetched by CMake at configure time,
+pinned to a release tag whose commit (or archive SHA-256) is verified. For offline builds,
+point `FETCHCONTENT_SOURCE_DIR_<NAME>` at local checkouts.
 
 ### Compile
 
 ```bash
-mkdir build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release -DENABLE_CUDA=ON -DENABLE_TLS=ON -DENABLE_SANDBOX=ON
-make -j$(nproc)
+cmake --preset release          # portable optimised build (presets: dev, asan-ubsan, tsan, release, cuda)
+cmake --build --preset release
+ctest --preset release          # unit tests; set LISA_TEST_MODEL=/path/to/model.gguf for engine tests
 ```
 
-Prepare a Model
+Main CMake options: `LISA_CUDA` (OFF), `LISA_TLS` (ON), `LISA_SANDBOX` (ON), `LISA_NATIVE`
+(ON, tune for the build CPU), `LISA_HARDENING` (ON), `LISA_SANITIZERS` (e.g. `address,undefined`).
 
-Download any GGUF model (e.g., from HuggingFace) and place it in a directory. You'll also need the matching vocab.json and merges.txt (for the tokenizer). Example using a small LLaMA‑2 7B:
+### Prepare a model
+
+Download any GGUF model, for example:
 
 ```bash
-wget https://huggingface.co/TheBloke/Llama-2-7B-Chat-GGUF/resolve/main/llama-2-7b-chat.Q4_K_M.gguf
-wget https://huggingface.co/TheBloke/Llama-2-7B-Chat-GGUF/resolve/main/vocab.json
-wget https://huggingface.co/TheBloke/Llama-2-7B-Chat-GGUF/resolve/main/merges.txt
+mkdir -p models
+curl -L -o models/model.gguf \
+  https://huggingface.co/TheBloke/Llama-2-7B-Chat-GGUF/resolve/main/llama-2-7b-chat.Q4_K_M.gguf
 ```
 
-Update config.yaml with the paths.
+Then set `model_path` in `config.yaml`.
 
-Run
+### Run
 
 ```bash
-./lisa
+./build/release/lisa --config config.yaml
 ```
 
 You should see logs like:
 
 ```json
-{"timestamp":1743696000000,"level":"info","message":"Loading model","path":"./models/llama-2-7b-chat.Q4_K_M.gguf"}
-{"timestamp":1743696000123,"level":"info","message":"Model loaded","n_layer":32,"n_embd":4096,"gpu":true}
-{"timestamp":1743696000124,"level":"info","message":"Starting server","bind":"127.0.0.1:8080","tls":false}
+{"level":"info","message":"Loading model","path":"./models/model.gguf","timestamp":1791636189245}
+{"gpu":false,"level":"info","message":"Model loaded","model":"llama 7B Q4_K - Medium","n_ctx":4096,"n_ctx_train":4096,"n_layer":32,"n_params":6738415616,"timestamp":1791636189259}
+{"bind":"127.0.0.1:8080","level":"info","message":"Starting server","timestamp":1791636189259,"tls":false}
 ```
 
-Test the API
+`SIGINT`/`SIGTERM` stop the server cleanly.
+
+### Test the API
 
 ```bash
 # Health check
 curl http://localhost:8080/healthz
 
 # Generate a completion (streaming)
-curl -X POST http://localhost:8080/v1/completions \
+curl -N -X POST http://localhost:8080/v1/completions \
   -H "Content-Type: application/json" \
   -H "X-API-Key: changeme" \
   -d '{"prompt": "Once upon a time", "max_new_tokens": 100, "temperature": 0.7, "top_p": 0.9}'
 ```
 
-The response will be a Server‑Sent Events stream:
+The response is a Server-Sent Events stream:
 
 ```
-data: {"token":"Once"}
-data: {"token":" upon"}
-data: {"token":" a"}
+data: {"token":","}
+data: {"token":" there"}
+data: {"token":" was"}
 ...
 data: [DONE]
 ```
 
-Configuration
+Request fields: `prompt` (required), `max_new_tokens` (1 … `max_context`), `temperature`
+(0 … 2, 0 = greedy), `top_p` (0 < p ≤ 1). Invalid requests and prompts that don't fit the
+context window get `400` with a JSON `error`.
 
-Edit config.yaml to your liking. Example:
+### Docker
+
+```bash
+docker build -t lisa-llm .     # CUDA: see the build args at the top of the Dockerfile
+docker run --rm -p 8080:8080 \
+  -v ./models:/models:ro \
+  -v ./my-config.yaml:/etc/lisa/config.yaml:ro \
+  lisa-llm
+```
+
+The image runs as an unprivileged user and listens on `0.0.0.0` inside the container. It
+refuses to start with the placeholder `api_key`, so mount a config with a strong key.
+
+## Configuration
+
+See [`config.yaml`](config.yaml) for every option with comments:
 
 ```yaml
-model_path: "./models/llama-2-7b-chat.Q4_K_M.gguf"
-vocab_path: "./models/vocab.json"
-merges_path: "./models/merges.txt"
+model_path: "./models/model.gguf"
 
 listen_addr: "127.0.0.1"
 listen_port: 8080
@@ -143,24 +166,25 @@ temperature_default: 0.8
 top_p_default: 0.95
 max_new_tokens_default: 256
 
-memory_limit_bytes: 4294967296   # 4 GiB
-sandbox_enabled: true
+memory_limit_bytes: 4294967296   # 4 GiB (sandbox only)
+sandbox_enabled: false           # experimental, see Project status
 use_gpu: true
-gpu_layers: 100                  # offload all layers to GPU
+gpu_layers: -1                   # -1 = all layers (CUDA builds)
 ```
 
-Security Notes
+## Security notes
 
-· The sandbox is only available on Linux and requires a kernel with user namespaces enabled (most distros have it).
-· The model file is memory‑mapped read‑only; the sandboxed process runs in a tmpfs new root, so any model‑internal file writes are lost.
-· For extra paranoia, run the whole binary under a dedicated user account (e.g., lisa).
-· If you expose the server to the internet, always enable TLS and set a strong API key.
+- The sandbox is **not** a security boundary yet; don't rely on it to contain untrusted
+  models until roadmap phase P2 lands.
+- If you expose the server beyond localhost, enable TLS and set a strong API key (the server
+  refuses the placeholder key on non-loopback addresses).
+- Run the binary under a dedicated, unprivileged user (the Docker image does).
 
-Limitations
+## Limitations
 
-· Only CPU and NVIDIA GPU via CUDA are supported. AMD/Intel GPUs would require additional backend work.
-· The tokenizer is a full GPT‑2 BPE implementation but does not yet support byte_fallback or added_tokens from modern models. It works for LLaMA‑2/3 and GPT‑2.
-· The server does not yet support batch inference (concurrent requests are serialized). This is planned for a future release.
+- Requests are served one at a time (continuous batching is planned, roadmap P4).
+- Raw completions only; chat templates and the OpenAI-compatible API come in P1/P3.
+- GPU support is NVIDIA CUDA only for now (llama.cpp's Vulkan/Metal/ROCm backends are not wired up).
 
 Contributing
 

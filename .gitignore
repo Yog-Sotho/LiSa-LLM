@@ -1,0 +1,15 @@
+# Build trees
+/build/
+/cmake-build-*/
+/out/
+compile_commands.json
+
+# Models and local configs
+/models/
+*.gguf
+
+# Editors / tools
+.cache/
+.idea/
+.vscode/
+*.swp

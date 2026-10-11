@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # 1.2 MB llama model used by the engine tests (tests/test_engine.cpp).
+  TEST_MODEL_URL: https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf
+  TEST_MODEL_SHA256: 270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d
+  APT_PACKAGES: ninja-build pkg-config libssl-dev libyaml-cpp-dev libseccomp-dev
+
+jobs:
+  build-test:
+    name: ${{ matrix.compiler.name }} / ${{ matrix.preset }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler:
+          - { name: gcc-13, cc: gcc-13, cxx: g++-13 }
+          - { name: clang-18, cc: clang-18, cxx: clang++-18 }
+        preset: [asan-ubsan, release]
+        include:
+          - compiler: { name: gcc-13, cc: gcc-13, cxx: g++-13 }
+            preset: tsan
+    env:
+      CC: ${{ matrix.compiler.cc }}
+      CXX: ${{ matrix.compiler.cxx }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends $APT_PACKAGES
+      - uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
+        with:
+          key: ${{ matrix.compiler.name }}-${{ matrix.preset }}
+      - name: Download test model
+        run: |
+          curl -sSfL --retry 3 -o "$RUNNER_TEMP/stories260K.gguf" "$TEST_MODEL_URL"
+          echo "$TEST_MODEL_SHA256  $RUNNER_TEMP/stories260K.gguf" | sha256sum --check
+      - name: Configure
+        # LISA_NATIVE=OFF: ccache objects must run on any runner CPU.
+        run: >
+          cmake --preset ${{ matrix.preset }}
+          -DLISA_NATIVE=OFF
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache
+          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }}
+      - name: Test
+        env:
+          LISA_TEST_MODEL: ${{ runner.temp }}/stories260K.gguf
+        run: ctest --preset ${{ matrix.preset }}
+
+  static-analysis:
+    runs-on: ubuntu-24.04
+    env:
+      CC: clang-18
+      CXX: clang++-18
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends $APT_PACKAGES clang-tidy-18 clang-format-18 cppcheck
+      - name: clang-format
+        run: clang-format-18 --dry-run --Werror src/*.cpp src/*.hpp tests/*.cpp
+      - name: Configure (compile_commands.json)
+        run: cmake --preset dev -DLISA_NATIVE=OFF
+      - name: clang-tidy
+        run: clang-tidy-18 -p build/dev --quiet src/*.cpp tests/*.cpp
+      - name: cppcheck
+        run: >
+          cppcheck --enable=warning,performance,portability,style --std=c++20
+          --inline-suppr --error-exitcode=1 --suppress=missingIncludeSystem
+          --suppress=unusedFunction -I src -q src tests
+
+  docker:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: hadolint/hadolint-action@06be81baf89a55ffd0e24b8f04a4185738dd3387 # v3.5.0
+        with:
+          dockerfile: Dockerfile
+      - name: Build image
+        run: docker build -t lisa-llm:ci .
+      - name: Smoke test
+        run: |
+          docker run --rm lisa-llm:ci --version
+          # The bundled container config must refuse the placeholder key on 0.0.0.0.
+          if docker run --rm lisa-llm:ci; then
+            echo "expected the placeholder api_key to be rejected" >&2
+            exit 1
+          fi

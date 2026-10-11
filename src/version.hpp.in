@@ -1,0 +1,9 @@
+#pragma once
+
+#include <string_view>
+
+namespace lisa {
+
+inline constexpr std::string_view kVersion = "@PROJECT_VERSION@";
+
+}  // namespace lisa
