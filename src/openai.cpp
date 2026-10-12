@@ -12,6 +12,12 @@ namespace {
 
 constexpr std::size_t kIdHexDigits = 24;
 
+json choice_base(const json& finish) {
+    return json{{"index", 0}, {"finish_reason", finish}};
+}
+
+}  // namespace
+
 std::string random_hex(std::size_t digits) {
     static constexpr std::array<char, 16> kHex = {'0', '1', '2', '3', '4', '5', '6', '7',
                                                   '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'};
@@ -21,12 +27,6 @@ std::string random_hex(std::size_t digits) {
     std::generate(out.begin(), out.end(), [&] { return kHex[dist(rng)]; });
     return out;
 }
-
-json choice_base(const json& finish) {
-    return json{{"index", 0}, {"finish_reason", finish}};
-}
-
-}  // namespace
 
 ResponseMeta make_meta(std::string_view id_prefix, std::string model) {
     ResponseMeta meta;

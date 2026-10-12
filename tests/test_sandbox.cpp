@@ -300,3 +300,40 @@ TEST_CASE("sandbox: HTTP API on a sandboxed engine", "[sandbox]") {
     CHECK(res->status == 200);
     CHECK(lisa::json::parse(res->body)["choices"][0]["message"]["content"].is_string());
 }
+
+TEST_CASE("sandbox: a worker that breaks the protocol is killed and restarted", "[sandbox]") {
+    // No model or namespaces needed: tests/hostile_worker.cpp stands in for the worker.
+    lisa::Config cfg;
+    cfg.model_path = __FILE__;  // any regular file; the hostile worker never reads it
+    cfg.use_gpu = false;
+    lisa::SandboxedEngine::Options options;
+    options.worker_exe = LISA_HOSTILE_WORKER;
+
+    std::unique_ptr<lisa::SandboxedEngine> engine;
+    try {
+        engine = std::make_unique<lisa::SandboxedEngine>(cfg, options);
+    } catch (const std::runtime_error& e) {
+        if (std::string(e.what()).find("LISA_SANDBOX=OFF") != std::string::npos) {
+            SKIP("built without the sandbox");
+        }
+        throw;
+    }
+    CHECK(engine->info().description == "hostile");
+
+    using Catch::Matchers::ContainsSubstring;
+    CHECK_THROWS_WITH(engine->tokenize("hi"), ContainsSubstring("inference worker died"));
+    CHECK(engine->status().worker_deaths == 1);
+
+    // The next request gets a fresh worker.
+    CHECK(engine->tokenize_chat({{"user", "hi"}}) == std::vector<lisa::Token>{1, 2, 3});
+    CHECK(engine->status().worker_restarts == 1);
+
+    lisa::GenerationParams params;
+    params.max_tokens = 4;
+    CHECK_THROWS_WITH(engine->generate({1}, params, [](std::string_view) { return true; }),
+                      ContainsSubstring("inference worker died"));
+    CHECK(engine->status().worker_deaths == 2);
+
+    cfg.chat_template = "malformed-ready";
+    CHECK_THROWS_WITH(lisa::SandboxedEngine(cfg, options), ContainsSubstring("malformed reply"));
+}

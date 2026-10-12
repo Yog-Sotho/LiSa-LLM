@@ -40,6 +40,15 @@
       }
     },
     {
+      "name": "fuzz",
+      "displayName": "libFuzzer targets + ASan/UBSan (needs CC=clang CXX=clang++)",
+      "inherits": "asan-ubsan",
+      "cacheVariables": {
+        "LISA_FUZZ": "ON",
+        "LISA_BUILD_TESTS": "OFF"
+      }
+    },
+    {
       "name": "release",
       "displayName": "Release (portable CPU build)",
       "inherits": "base",
@@ -62,6 +71,7 @@
     { "name": "dev", "configurePreset": "dev" },
     { "name": "asan-ubsan", "configurePreset": "asan-ubsan" },
     { "name": "tsan", "configurePreset": "tsan" },
+    { "name": "fuzz", "configurePreset": "fuzz" },
     { "name": "release", "configurePreset": "release" },
     { "name": "cuda", "configurePreset": "cuda" }
   ],

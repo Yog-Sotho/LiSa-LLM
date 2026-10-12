@@ -78,7 +78,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends $APT_PACKAGES clang-tidy-18 clang-format-18 cppcheck
       - name: clang-format
-        run: clang-format-18 --dry-run --Werror src/*.cpp src/*.hpp tests/*.cpp
+        run: clang-format-18 --dry-run --Werror src/*.cpp src/*.hpp tests/*.cpp tests/*.hpp fuzz/*.cpp
       - name: Configure (compile_commands.json)
         run: cmake --preset dev -DLISA_NATIVE=OFF
       - name: clang-tidy
@@ -87,7 +87,7 @@ jobs:
         run: >
           cppcheck --enable=warning,performance,portability,style --std=c++20
           --inline-suppr --error-exitcode=1 --suppress=missingIncludeSystem
-          --suppress=unusedFunction -I src -q src tests
+          --suppress=unusedFunction -I src -q src tests fuzz
 
   docker:
     runs-on: ubuntu-24.04

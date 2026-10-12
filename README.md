@@ -17,11 +17,13 @@
 ## Project status
 
 LiSa-LLM is being rebuilt following the [codebase audit](docs/project/codebase_audit.md).
-**Phases P0–P2 are done**: the project builds reproducibly, inference runs on
+**Phases P0–P3 are done**: the project builds reproducibly, inference runs on
 [llama.cpp](https://github.com/ggml-org/llama.cpp)'s `libllama`, the API is OpenAI-compatible
-with chat templates, and the model runs in an isolated worker process. CI runs sanitizers,
-static analysis, end-to-end model and HTTP tests, and escape attempts against a live worker.
-Next up: API hardening (P3).
+with chat templates, the model runs in an isolated worker process, and the API is hardened
+for exposure (multiple hashed keys, rate limits, a bounded queue, timeouts, mTLS, Prometheus
+metrics, graceful shutdown). CI runs sanitizers, static analysis, end-to-end model and HTTP
+tests, escape attempts against a live worker, and libFuzzer on the request and IPC decoders.
+Next up: performance (P4, continuous batching).
 
 ## Features
 
@@ -33,10 +35,16 @@ Next up: API hardening (P3).
 - 📡 **Real-time streaming** via Server-Sent Events; generation stops when the client disconnects.
 - 🎛️ **Sampling** – temperature, top-p, top-k, min-p, presence/frequency/repeat penalties,
   seed and stop sequences.
-- 🌐 **HTTPS and API keys** – optional TLS, Bearer/`X-API-Key` authentication with
-  constant-time comparison, strict request validation and a 1 MiB body limit.
+- 🌐 **Ready for exposure** – TLS 1.2+/1.3 with forward-secret AEAD suites, optional mutual
+  TLS, HSTS; multiple API keys stored as SHA-256 digests; per-key rate limits; a bounded
+  first-come-first-served queue (429 + `Retry-After` when full); timeouts; strict request
+  validation and a 1 MiB body limit.
+- 📈 **Operable** – `/healthz`, `/readyz` (for load balancers and Kubernetes), Prometheus
+  `/metrics` (latency, queue wait, time to first token, tokens/s, rejections, worker
+  restarts), JSON access logs with request ids (`X-Request-Id`), graceful drain on SIGTERM.
 - 🧪 **Tested** – unit tests plus end-to-end generation tests against a real model under
-  ASan/UBSan and TSan; clang-tidy, cppcheck and CodeQL in CI.
+  ASan/UBSan and TSan, TLS/mTLS tests with generated certificates, libFuzzer targets for
+  untrusted input; clang-tidy, cppcheck and CodeQL in CI.
 - 🔒 **Sandboxed inference (on by default)** – the network-facing broker never parses the
   model. A separate worker does, with no network, no visible files except the model, no other
   processes, no capabilities, and a seccomp allow-list that kills it on anything else. Crashed
@@ -101,7 +109,21 @@ Then set `model_path` in `config.yaml`.
 
 ```bash
 ./build/release/lisa --config config.yaml
+# or without a config file:
+./build/release/lisa --model models/model.gguf --port 8080
 ```
+
+| Option | Purpose |
+|---|---|
+| `-c, --config <path>` | YAML config (default: `config.yaml` if present) |
+| `-m, --model <path>` | Model file, overrides `model_path` |
+| `--host <addr>`, `-p, --port <n>` | Listen address and port |
+| `--check-config` | Validate the configuration and the model file (and its SHA-256), then exit |
+| `--hash-key` | Read an API key on stdin and print its `sha256:` entry for `api_keys` |
+
+Every config key can also be set as an environment variable `LISA_<KEY>`, e.g.
+`LISA_LISTEN_PORT=9000` or `LISA_API_KEYS=key1,key2`. Precedence: command line >
+environment > config file > defaults.
 
 You should see logs like:
 
@@ -113,7 +135,9 @@ You should see logs like:
 {"bind":"127.0.0.1:8080","level":"info","message":"Starting server","model":"model","timestamp":1791764108919,"tls":false}
 ```
 
-`SIGINT`/`SIGTERM` stop the server cleanly.
+`SIGINT`/`SIGTERM` drain the server: new requests get 503, `/readyz` turns 503, running and
+queued requests finish (up to `shutdown_timeout_seconds`, then they are cancelled). A second
+signal stops at once.
 
 ### Sandbox requirements
 
@@ -142,8 +166,15 @@ LiSa-LLM speaks the **OpenAI API**, so existing OpenAI clients and SDKs work unc
 | `POST /v1/completions` | Raw text completion |
 | `GET /v1/models` | The loaded model |
 | `GET /healthz` | Liveness check (no key needed) |
+| `GET /readyz` | Readiness: 503 while draining or when the worker keeps crashing (no key) |
+| `GET /metrics` | Prometheus metrics (needs a key when keys are configured) |
 
-Authenticate with `Authorization: Bearer <api_key>` (or `X-API-Key: <api_key>`).
+Authenticate with `Authorization: Bearer <api_key>` (or `X-API-Key: <api_key>`). Every response
+carries an `X-Request-Id` (yours if you send a plain one, else a random one) that also appears
+in the server's access log.
+
+When the queue is full (`max_queued_requests`) or a key exceeds `rate_limit_per_minute`, the
+server answers `429` with a `Retry-After` header, which the OpenAI SDKs honour.
 
 ```python
 from openai import OpenAI
@@ -211,9 +242,23 @@ listen_port: 8080
 enable_tls: false
 cert_file: ""
 key_file: ""
-api_key: "changeme"          # set to empty string to disable auth
+client_ca_file: ""               # require client certificates from this CA (mTLS)
+tls_min_version: "1.2"           # or "1.3"
 
-n_threads: 8
+api_key: "changeme"              # see also api_keys, api_keys_file, LISA_API_KEYS
+api_keys: []                     # keys or "sha256:<hex>" digests (lisa --hash-key)
+api_keys_file: ""                # one key or digest per line
+
+max_queued_requests: 16          # more waiting requests get 429
+rate_limit_per_minute: 0         # per key; 0 = unlimited
+rate_limit_burst: 10
+max_prompt_tokens: 0             # 0 = context window only
+read_timeout_seconds: 30
+write_timeout_seconds: 60
+keep_alive_timeout_seconds: 5
+shutdown_timeout_seconds: 30
+
+n_threads: 0                     # 0 = one per available CPU
 max_context: 4096
 temperature_default: 0.8
 top_p_default: 0.95
@@ -229,13 +274,18 @@ use_gpu: true
 gpu_layers: -1                   # -1 = all layers (CUDA builds)
 ```
 
+Unknown keys are rejected, so a typo can't silently leave a setting at its default.
+
 ## Security notes
 
 - The sandbox is designed to contain a malicious model file; read the
   [threat model](docs/project/threat_model.md) for what it does and doesn't cover (kernel
   bugs, CPU exhaustion, the unsandboxed network broker, GPU mode).
-- If you expose the server beyond localhost, enable TLS and set a strong API key (the server
-  refuses the placeholder key on non-loopback addresses).
+- If you expose the server beyond localhost, enable TLS and use random keys of at least 16
+  characters: off loopback the server refuses the placeholder `changeme` and shorter keys.
+  Prefer `sha256:` entries (`lisa --hash-key`) in `api_keys_file` over plaintext keys.
+- Set `rate_limit_per_minute` and keep `max_queued_requests` small so one client can't
+  monopolise the model; put `/readyz` behind your load balancer's health check.
 - Run the binary under a dedicated, unprivileged user (the Docker image does).
 
 ## Limitations

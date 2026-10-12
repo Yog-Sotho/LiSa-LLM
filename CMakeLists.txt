@@ -13,7 +13,12 @@ option(LISA_NATIVE "Optimise the engine for the build machine's CPU (disable for
 option(LISA_HARDENING "Compile with stack protector, FORTIFY_SOURCE, RELRO/now and PIE" ON)
 option(LISA_WARNINGS_AS_ERRORS "Treat compiler warnings in first-party code as errors" OFF)
 option(LISA_BUILD_TESTS "Build the unit tests" ${PROJECT_IS_TOP_LEVEL})
+option(LISA_FUZZ "Build the libFuzzer targets in fuzz/ (clang only)" OFF)
 set(LISA_SANITIZERS "" CACHE STRING "Comma-separated sanitizers for first-party code, e.g. address,undefined")
+
+if(LISA_FUZZ AND NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    message(FATAL_ERROR "LISA_FUZZ needs clang (libFuzzer); set CC=clang CXX=clang++")
+endif()
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -43,6 +48,9 @@ configure_file(src/version.hpp.in "${CMAKE_CURRENT_BINARY_DIR}/generated/lisa/ve
 
 add_library(lisa_core STATIC
     src/utils.cpp
+    src/auth.cpp
+    src/admission.cpp
+    src/metrics.cpp
     src/request.cpp
     src/stop.cpp
     src/openai.cpp
@@ -71,6 +79,9 @@ target_link_libraries(lisa_core
         Threads::Threads
 )
 lisa_configure_target(lisa_core)
+if(LISA_TLS)
+    target_link_libraries(lisa_core PRIVATE OpenSSL::SSL)  # TLS hardening in server.cpp
+endif()
 if(LISA_CUDA)
     target_compile_definitions(lisa_core PRIVATE LISA_CUDA_BUILD)
 endif()
@@ -85,6 +96,10 @@ target_link_libraries(lisa PRIVATE lisa_core)
 lisa_configure_target(lisa)
 
 install(TARGETS lisa RUNTIME DESTINATION bin)
+
+if(LISA_FUZZ)
+    add_subdirectory(fuzz)
+endif()
 
 if(LISA_BUILD_TESTS)
     enable_testing()

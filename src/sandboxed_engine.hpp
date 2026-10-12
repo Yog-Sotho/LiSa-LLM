@@ -6,6 +6,7 @@
 #include "utils.hpp"
 
 #include <sys/types.h>
+#include <atomic>
 #include <chrono>
 #include <deque>
 #include <mutex>
@@ -43,6 +44,7 @@ public:
                               const GenerationParams& params,
                               const PieceCallback& on_piece) override;
     [[nodiscard]] ModelInfo info() const override;
+    [[nodiscard]] EngineStatus status() const noexcept override;
 
     // Test hook: runs a probe inside the sandbox. Returns the worker's answer, or
     // {"worker_died": ..., "signal": N, "exit_code": N} when the probe killed it.
@@ -61,7 +63,23 @@ private:
     void start_worker();
     void ensure_worker();
     json call(const json& request);
+    GenerationResult generate_locked(const std::vector<Token>& prompt_tokens,
+                                     const GenerationParams& params, const PieceCallback& on_piece);
     [[noreturn]] void worker_failed(const ipc::IpcError& error);
+
+    // Runs `decode` on messages from the worker. The worker is untrusted: a well-framed
+    // message of the wrong shape is a protocol violation, so the worker is killed and
+    // restarted rather than leaving the channel out of step.
+    template <typename Decode>
+    auto decode_worker_reply(Decode&& decode) -> decltype(decode()) {
+        try {
+            return decode();
+        } catch (const json::exception& e) {
+            worker_failed(
+                ipc::IpcError(std::string("malformed message from the worker: ") + e.what(),
+                              /*peer_closed=*/false));
+        }
+    }
     WorkerExit reap_worker(bool kill_first);
 
     Config cfg_;
@@ -71,6 +89,12 @@ private:
     ipc::Channel channel_;
     pid_t pid_ = -1;
     std::deque<std::chrono::steady_clock::time_point> restarts_;
+
+    // Lock-free status for /readyz and /metrics (mutex_ is held during generation).
+    std::atomic<bool> worker_up_{false};
+    std::atomic<std::chrono::steady_clock::rep> restart_blocked_until_{0};
+    std::atomic<std::uint64_t> worker_deaths_{0};
+    std::atomic<std::uint64_t> worker_restarts_{0};
 
     mutable std::mutex info_mutex_;
     ModelInfo info_;

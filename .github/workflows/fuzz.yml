@@ -1,0 +1,54 @@
+name: Fuzz
+
+on:
+  pull_request:
+  schedule:
+    - cron: "17 3 * * *"  # nightly, longer runs
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  libfuzzer:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: fuzz_request, corpus: request, extra: "-dict=fuzz/request.dict" }
+          - { target: fuzz_worker_reply, corpus: worker_reply, extra: "" }
+    env:
+      CC: clang-18
+      CXX: clang++-18
+      # Seconds per target: a quick pass on pull requests, longer at night.
+      FUZZ_SECONDS: ${{ github.event_name == 'pull_request' && '60' || '900' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build pkg-config libssl-dev \
+            libyaml-cpp-dev libseccomp-dev libclang-rt-18-dev
+      - name: Build
+        run: |
+          cmake --preset fuzz -DLISA_NATIVE=OFF
+          cmake --build --preset fuzz --target ${{ matrix.target }}
+      - name: Fuzz
+        run: |
+          mkdir -p corpus artifacts
+          cp fuzz/corpus/${{ matrix.corpus }}/* corpus/
+          build/fuzz/fuzz/${{ matrix.target }} ${{ matrix.extra }} \
+            -max_total_time="$FUZZ_SECONDS" -max_len=65536 -timeout=10 -rss_limit_mb=2048 \
+            -artifact_prefix=artifacts/ corpus
+      - name: Show crashing input
+        if: failure()
+        run: |
+          for f in artifacts/*; do
+            echo "== $f (base64; reproduce with: base64 -d > input && ${{ matrix.target }} input)"
+            base64 "$f"
+          done

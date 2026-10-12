@@ -156,17 +156,21 @@ void SandboxedEngine::start_worker() {
         }
         throw std::runtime_error(message);
     }
-    if (reply.contains("fatal")) {
-        channel_.close();
-        (void)reap_worker(false);
-        throw std::runtime_error(reply["fatal"].get<std::string>());
-    }
-
-    {
+    try {
+        if (reply.contains("fatal")) {
+            channel_.close();
+            (void)reap_worker(false);
+            throw std::runtime_error(reply["fatal"].get<std::string>());
+        }
         const std::lock_guard<std::mutex> lock(info_mutex_);
         info_ = reply.at("ready").get<ModelInfo>();
         landlock_abi_ = reply.value("landlock_abi", 0);
+    } catch (const json::exception& e) {
+        (void)reap_worker(true);
+        throw std::runtime_error(std::string("sandboxed worker sent a malformed reply: ") +
+                                 e.what());
     }
+    worker_up_ = true;
     log_info("Sandboxed worker ready", {{"pid", pid_}, {"landlock_abi", landlock_abi_}});
 }
 
@@ -176,30 +180,31 @@ SandboxedEngine::WorkerExit SandboxedEngine::reap_worker(bool kill_first) {
         exit.description = "not running";
         return exit;
     }
+    worker_up_ = false;
     channel_.close();
     if (kill_first) {
         ::kill(pid_, SIGKILL);
     }
-    int status = 0;
+    int wait_status = 0;
     const auto deadline = std::chrono::steady_clock::now() + kShutdownGrace;
     while (true) {
-        const pid_t r = ::waitpid(pid_, &status, WNOHANG);
+        const pid_t r = ::waitpid(pid_, &wait_status, WNOHANG);
         if (r == pid_ || (r < 0 && errno != EINTR)) {
             break;
         }
         if (std::chrono::steady_clock::now() >= deadline) {
             ::kill(pid_, SIGKILL);
-            ::waitpid(pid_, &status, 0);
+            ::waitpid(pid_, &wait_status, 0);
             break;
         }
         std::this_thread::sleep_for(kReapPoll);
     }
 
     // The reaper reports a killed worker as exit code 128 + signal.
-    if (WIFSIGNALED(status)) {
-        exit.signal = WTERMSIG(status);
-    } else if (WIFEXITED(status)) {
-        const int code = WEXITSTATUS(status);
+    if (WIFSIGNALED(wait_status)) {
+        exit.signal = WTERMSIG(wait_status);
+    } else if (WIFEXITED(wait_status)) {
+        const int code = WEXITSTATUS(wait_status);
         if (code > 128) {
             exit.signal = code - 128;
         } else {
@@ -224,6 +229,7 @@ SandboxedEngine::WorkerExit SandboxedEngine::reap_worker(bool kill_first) {
 
 void SandboxedEngine::worker_failed(const ipc::IpcError& error) {
     const WorkerExit exit = reap_worker(/*kill_first=*/!error.peer_closed());
+    ++worker_deaths_;
     log_error("Inference worker died", {{"status", exit.description}, {"error", error.what()}});
     throw std::runtime_error("inference worker died (" + exit.description + ")");
 }
@@ -237,9 +243,12 @@ void SandboxedEngine::ensure_worker() {
         restarts_.pop_front();
     }
     if (static_cast<int>(restarts_.size()) >= options_.max_restarts) {
+        restart_blocked_until_ =
+            (restarts_.front() + options_.restart_window).time_since_epoch().count();
         throw std::runtime_error("inference worker keeps crashing; not restarting it");
     }
     restarts_.push_back(now);
+    ++worker_restarts_;
     log_warn("Restarting the inference worker");
     start_worker();
 }
@@ -261,16 +270,20 @@ json SandboxedEngine::call(const json& request) {
 
 std::vector<Token> SandboxedEngine::tokenize(std::string_view text) {
     const std::lock_guard<std::mutex> lock(mutex_);
-    return call({{"op", "tokenize"}, {"text", std::string(text)}})
-        .at("tokens")
-        .get<std::vector<Token>>();
+    return decode_worker_reply([&] {
+        return call({{"op", "tokenize"}, {"text", std::string(text)}})
+            .at("tokens")
+            .get<std::vector<Token>>();
+    });
 }
 
 std::vector<Token> SandboxedEngine::tokenize_chat(const std::vector<ChatMessage>& messages) {
     const std::lock_guard<std::mutex> lock(mutex_);
-    return call({{"op", "tokenize_chat"}, {"messages", messages}})
-        .at("tokens")
-        .get<std::vector<Token>>();
+    return decode_worker_reply([&] {
+        return call({{"op", "tokenize_chat"}, {"messages", messages}})
+            .at("tokens")
+            .get<std::vector<Token>>();
+    });
 }
 
 GenerationResult SandboxedEngine::generate(const std::vector<Token>& prompt_tokens,
@@ -278,6 +291,12 @@ GenerationResult SandboxedEngine::generate(const std::vector<Token>& prompt_toke
                                            const PieceCallback& on_piece) {
     const std::lock_guard<std::mutex> lock(mutex_);
     ensure_worker();
+    return decode_worker_reply([&] { return generate_locked(prompt_tokens, params, on_piece); });
+}
+
+GenerationResult SandboxedEngine::generate_locked(const std::vector<Token>& prompt_tokens,
+                                                  const GenerationParams& params,
+                                                  const PieceCallback& on_piece) {
     try {
         bool cancelled = false;
         channel_.send({{"op", "generate"}, {"tokens", prompt_tokens}, {"params", params}});
@@ -324,10 +343,20 @@ json SandboxedEngine::probe(const json& request) {
         return reply.at("probe");
     } catch (const ipc::IpcError& e) {
         const WorkerExit exit = reap_worker(!e.peer_closed());
+        ++worker_deaths_;
         return json{{"worker_died", exit.description},
                     {"signal", exit.signal},
                     {"exit_code", exit.exit_code}};
     }
+}
+
+EngineStatus SandboxedEngine::status() const noexcept {
+    EngineStatus status;
+    status.ready = worker_up_ || std::chrono::steady_clock::now().time_since_epoch().count() >=
+                                     restart_blocked_until_;
+    status.worker_deaths = worker_deaths_;
+    status.worker_restarts = worker_restarts_;
+    return status;
 }
 
 pid_t SandboxedEngine::worker_pid() const {

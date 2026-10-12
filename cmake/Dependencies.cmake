@@ -100,7 +100,11 @@ else()
 endif()
 
 # --- OpenSSL (model SHA-256; TLS when LISA_TLS) ------------------------------------------
-find_package(OpenSSL 3.0 REQUIRED COMPONENTS Crypto)
+if(LISA_TLS)
+    find_package(OpenSSL 3.0 REQUIRED COMPONENTS Crypto SSL)
+else()
+    find_package(OpenSSL 3.0 REQUIRED COMPONENTS Crypto)
+endif()
 
 # --- libseccomp (sandbox) --------------------------------------------------------------------
 if(LISA_SANDBOX)
