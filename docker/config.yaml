@@ -13,6 +13,9 @@ temperature_default: 0.8
 top_p_default: 0.95
 max_new_tokens_default: 256
 
+# The sandbox needs user namespaces, which Docker's default profiles block. To enable it,
+# run the container with --security-opt seccomp=unconfined --security-opt apparmor=unconfined
+# (LiSa installs a stricter seccomp filter in its worker) and set this to true.
 sandbox_enabled: false
 use_gpu: true
 gpu_layers: -1

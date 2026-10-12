@@ -99,6 +99,9 @@ else()
         56e3bb550c91fd7005566f19c079cb7a503223cf)
 endif()
 
+# --- OpenSSL (model SHA-256; TLS when LISA_TLS) ------------------------------------------
+find_package(OpenSSL 3.0 REQUIRED COMPONENTS Crypto)
+
 # --- libseccomp (sandbox) --------------------------------------------------------------------
 if(LISA_SANDBOX)
     find_package(PkgConfig REQUIRED)

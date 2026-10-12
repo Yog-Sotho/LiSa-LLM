@@ -11,6 +11,63 @@
 
 ## Progress log
 
+### 2026-10-12 — P2 complete (broker/worker sandbox)
+
+Done (design and limits in [threat_model.md](threat_model.md)):
+- **Broker/worker split:** the network-facing process (`SandboxedEngine`) never parses the
+  model. It opens the model file, optionally checks `model_sha256` on that descriptor (OpenSSL
+  EVP), then re-executes itself (`/proc/self/exe --sandbox-worker`, `posix_spawn`, empty
+  environment) with only the IPC socket (fd 3) and the model (fd 4). The protocol is
+  length-prefixed JSON over a `socketpair` with a 16 MiB frame limit, and secrets (API key, TLS
+  paths) never cross it. `HttpServer` now talks to an abstract `Engine`. The in-process engine
+  stays available as `sandbox_enabled: false`, which logs a warning.
+- **Worker lockdown, before the first byte of the model is read:** `PR_SET_PDEATHSIG`; optional
+  cgroup v2 (`memory.max`, `memory.swap.max=0`, `pids.max`); user, mount, network, IPC, UTS,
+  cgroup and PID namespaces with a one-UID map and `setgroups=deny`. The model descriptor is
+  reopened inside the namespace and its inode checked. The root is an empty read-only tmpfs
+  holding only the model (bind-mounted read-only, `nosuid,nodev,noexec`), via `pivot_root`
+  with the old root detached. A reaper outside the PID namespace (seccomp: `wait4`/`exit`
+  only) reports how the worker died. Then: `RLIMIT_DATA`/`NOFILE`/`CORE`, non-dumpable,
+  `no_new_privs`, Landlock up to ABI 7 (filesystem, TCP, abstract sockets, signals), and all
+  capabilities dropped.
+- **Two-stage seccomp** (default: kill the process). A load stage, then a narrower serve stage
+  installed after a warm-up generation: no `openat`, `socket`, `execve`, `fork`, `mount`,
+  `unshare`, `ptrace`, `kill` or `setuid`. Threads only (`clone` with `CLONE_THREAD`, `clone3`
+  → ENOSYS), and `ioctl` → ENOTTY. The allow-lists come from `strace -f` runs of real workloads
+  (F32 and Q4_K, 1–4 threads, streaming, cancellation, chat templates). `sandbox_seccomp_log`
+  switches to logging for diagnosis.
+- **Supervision:** worker deaths are logged with the signal ("blocked system call" for
+  SIGSYS). The worker is restarted on the next request at most 3 times a minute. Startup
+  failures stop the server with the reason, and it never silently runs unsandboxed.
+- **Tests:** 61 tests. Every sandbox test runs on a live worker:
+  - the same output as the in-process engine;
+  - request errors and cancellation across the boundary;
+  - `/proc/<worker>/status` checks: seccomp mode, ≥ 2 filters, `NoNewPrivs`, empty capability
+    sets, PID 1 in its namespace;
+  - root contents: only `/model.gguf`, no `/etc`, no `/proc`;
+  - eight escape probes (`socket`, `execve`, `fork`, `mount`, `unshare`, `ptrace`, `kill`,
+    `setuid`), each expected to be killed by SIGSYS and followed by a restart;
+  - restart limit, SHA-256 enforcement, startup failures, HTTP on a sandboxed engine;
+  - IPC framing and protocol round trips.
+
+  Green under GCC, ASan+UBSan and TSan as root and as an unprivileged user, and with
+  Qwen2.5-0.5B Q4_K_M (identical output to the unsandboxed engine). CI enables unprivileged
+  user namespaces on the runner and sets `LISA_REQUIRE_SANDBOX=1`, so the sandbox tests fail
+  rather than skip.
+
+Deviations from the plan:
+- `RLIMIT_AS` is replaced by `RLIMIT_DATA`: memory-mapped model weights would count against
+  an address-space limit.
+- No `cpu.max`: CPU exhaustion by a malicious model is a documented non-goal.
+- The GPU is not sandboxed. CUDA builds refuse `use_gpu` with the sandbox on, instead of
+  allowing `ioctl` and device nodes, which would make the profile much weaker.
+- The model descriptor is passed by inheritance at spawn time, not with `SCM_RIGHTS`.
+
+Estimated scores after P2 (self-assessed): Build 8, Security 7.5, Concurrency 6,
+Principles 8, Dependencies 8, Observability 5, Lifecycle 6, Quality 8, Dead code 9 →
+**health ≈ 7.3/10, SOTA ≈ 6.5/10**. Next is P3: API hardening (timeouts, limits, `/readyz`,
+`/metrics`, fuzzing the request and IPC decoders).
+
 ### 2026-10-11 — P1 complete (OpenAI-compatible API, chat templates, sampling)
 
 Done:

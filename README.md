@@ -3,7 +3,7 @@
   <img src="assets/Logo_LiSa.png" alt="LiSa Logo" width="420" style="margin-bottom: 20px;">
   <h1>LiSa-LLM – Lightweight, Sandboxed LLM Inference Server</h1>
   <p><em>“Because your cat‑sized model deserves a lion‑sized sandbox.”</em></p>
-  <p><strong>LiSa-LLM is a small, self-contained C++20 inference server for GGUF models, built on llama.cpp's <code>libllama</code> with optional CUDA offload. It provides streaming Server-Sent Events, API-key authentication and TLS. A hardened Linux sandbox for running untrusted models is under active development (see Project status).</strong></p>
+  <p><strong>LiSa-LLM is a small, self-contained C++20 inference server for GGUF models, built on llama.cpp's <code>libllama</code> with optional CUDA offload. It provides streaming Server-Sent Events, API-key authentication and TLS, and parses every model inside a locked-down worker process (namespaces, empty read-only root, Landlock, seccomp), so a malicious GGUF file can't reach your system.</strong></p>
   <p>
     <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT">
     <img src="https://img.shields.io/badge/C++20-ready-blue.svg" alt="C++20 Ready">
@@ -17,10 +17,11 @@
 ## Project status
 
 LiSa-LLM is being rebuilt following the [codebase audit](docs/project/codebase_audit.md).
-**Phases P0 and P1 are done**: the project builds reproducibly, inference runs on
+**Phases P0–P2 are done**: the project builds reproducibly, inference runs on
 [llama.cpp](https://github.com/ggml-org/llama.cpp)'s `libllama`, the API is OpenAI-compatible
-with chat templates, and CI runs sanitizers, static analysis and end-to-end model and HTTP
-tests. Next up: a sandbox that really isolates the model (P2).
+with chat templates, and the model runs in an isolated worker process. CI runs sanitizers,
+static analysis, end-to-end model and HTTP tests, and escape attempts against a live worker.
+Next up: API hardening (P3).
 
 ## Features
 
@@ -36,9 +37,11 @@ tests. Next up: a sandbox that really isolates the model (P2).
   constant-time comparison, strict request validation and a 1 MiB body limit.
 - 🧪 **Tested** – unit tests plus end-to-end generation tests against a real model under
   ASan/UBSan and TSan; clang-tidy, cppcheck and CodeQL in CI.
-- 🔒 **Sandbox (experimental, off by default)** – namespaces, seccomp, cgroup v2 and
-  `pivot_root` code exists but **does not isolate the server yet**; it is being redesigned
-  as a broker/worker split (roadmap P2).
+- 🔒 **Sandboxed inference (on by default)** – the network-facing broker never parses the
+  model. A separate worker does, with no network, no visible files except the model, no other
+  processes, no capabilities, and a seccomp allow-list that kills it on anything else. Crashed
+  workers are logged and restarted. Optional `model_sha256` pinning. See the
+  [threat model](docs/project/threat_model.md).
 
 ## Build & Run
 
@@ -47,7 +50,7 @@ tests. Next up: a sandbox that really isolates the model (P2).
 - CMake ≥ 3.28 and Ninja (or Make)
 - C++20 compiler (GCC 13+, Clang 18+)
 - yaml-cpp (built from source if not installed)
-- OpenSSL (for TLS; `-DLISA_TLS=OFF` to build without)
+- OpenSSL 3 (libcrypto; model SHA-256, and TLS)
 - libseccomp (for the sandbox; `-DLISA_SANDBOX=OFF` to build without)
 - CUDA toolkit (optional, for `-DLISA_CUDA=ON`)
 
@@ -103,12 +106,31 @@ Then set `model_path` in `config.yaml`.
 You should see logs like:
 
 ```json
-{"level":"info","message":"Loading model","path":"./models/model.gguf","timestamp":1791636189245}
-{"gpu":false,"level":"info","message":"Model loaded","model":"llama 7B Q4_K - Medium","n_ctx":4096,"n_ctx_train":4096,"n_layer":32,"n_params":6738415616,"timestamp":1791636189259}
-{"bind":"127.0.0.1:8080","level":"info","message":"Starting server","timestamp":1791636189259,"tls":false}
+{"level":"info","message":"LiSa-LLM starting","sandbox":true,"timestamp":1791764103710,"version":"1.0.0"}
+{"level":"info","message":"Loading model","path":"./models/model.gguf","sandbox":true,"timestamp":1791764103710}
+{"landlock_abi":7,"level":"info","message":"Sandboxed worker ready","pid":5456,"timestamp":1791764108919}
+{"chat_template":"model (auto-detected)","gpu":false,"level":"info","message":"Model loaded","model":"qwen2 1B Q4_K - Medium","n_ctx":2048,"n_ctx_train":32768,"n_layer":24,"n_params":630167424,"timestamp":1791764108919}
+{"bind":"127.0.0.1:8080","level":"info","message":"Starting server","model":"model","timestamp":1791764108919,"tls":false}
 ```
 
 `SIGINT`/`SIGTERM` stop the server cleanly.
+
+### Sandbox requirements
+
+The sandbox needs Linux with **unprivileged user namespaces** (kernel ≥ 5.13 recommended for
+Landlock). If it can't be set up, the server refuses to start rather than run unprotected.
+
+- **Ubuntu 23.10+** restricts user namespaces through AppArmor:
+  `sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0` (or an AppArmor profile for `lisa`).
+- **Docker**: add `--security-opt seccomp=unconfined --security-opt apparmor=unconfined`
+  (the worker installs a much stricter seccomp filter of its own) and set
+  `sandbox_enabled: true`; the bundled container config has it off.
+- **GPU offload** can't be sandboxed (drivers need device nodes and `ioctl`): it requires
+  `sandbox_enabled: false`, which logs a warning.
+
+`memory_limit_bytes` caps the worker's heap (weights repacked for the CPU, KV cache, compute
+buffers); raise it for large models. For hard limits, point `sandbox_cgroup` at a delegated
+cgroup v2 directory (e.g. a systemd unit with `Delegate=yes`).
 
 ### Use the API
 
@@ -172,7 +194,8 @@ docker run --rm -p 8080:8080 \
 ```
 
 The image runs as an unprivileged user and listens on `0.0.0.0` inside the container. It
-refuses to start with the placeholder `api_key`, so mount a config with a strong key.
+refuses to start with the placeholder `api_key`, so mount a config with a strong key. To run
+the sandbox in the container, see [Sandbox requirements](#sandbox-requirements).
 
 ## Configuration
 
@@ -196,16 +219,21 @@ temperature_default: 0.8
 top_p_default: 0.95
 max_new_tokens_default: 256
 
-memory_limit_bytes: 4294967296   # 4 GiB (sandbox only)
-sandbox_enabled: false           # experimental, see Project status
+model_sha256: ""                 # optional: refuse to start on any other file
+
+sandbox_enabled: true            # parse the model only in the isolated worker
+memory_limit_bytes: 4294967296   # worker heap limit, 4 GiB
+sandbox_cgroup: ""               # optional delegated cgroup v2 dir (memory/pids limits)
+sandbox_seccomp_log: false       # diagnose only: log blocked syscalls instead of killing
 use_gpu: true
 gpu_layers: -1                   # -1 = all layers (CUDA builds)
 ```
 
 ## Security notes
 
-- The sandbox is **not** a security boundary yet; don't rely on it to contain untrusted
-  models until roadmap phase P2 lands.
+- The sandbox is designed to contain a malicious model file; read the
+  [threat model](docs/project/threat_model.md) for what it does and doesn't cover (kernel
+  bugs, CPU exhaustion, the unsandboxed network broker, GPU mode).
 - If you expose the server beyond localhost, enable TLS and set a strong API key (the server
   refuses the placeholder key on non-loopback addresses).
 - Run the binary under a dedicated, unprivileged user (the Docker image does).

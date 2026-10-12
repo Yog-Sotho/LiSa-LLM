@@ -1,6 +1,6 @@
 #pragma once
 
-#include "inference.hpp"
+#include "engine.hpp"
 #include "request.hpp"
 #include "utils.hpp"
 
@@ -22,7 +22,7 @@ namespace lisa {
 // /healthz.
 class HttpServer {
 public:
-    HttpServer(InferenceEngine& engine, Config cfg);
+    HttpServer(Engine& engine, Config cfg);
     ~HttpServer();
 
     HttpServer(const HttpServer&) = delete;
@@ -51,7 +51,7 @@ private:
     void respond(httplib::Response& res, Api api, std::vector<Token> prompt,
                  GenerationParams params);
 
-    InferenceEngine& engine_;
+    Engine& engine_;
     Config cfg_;
     std::string model_id_;
     std::int64_t created_ = 0;

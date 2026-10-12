@@ -1,7 +1,9 @@
 #include "inference.hpp"
-#include "sandbox.hpp"
+#include "model_file.hpp"
+#include "sandboxed_engine.hpp"
 #include "server.hpp"
 #include "utils.hpp"
+#include "worker.hpp"
 
 #include <pthread.h>
 #include <sys/wait.h>
@@ -86,16 +88,42 @@ int wait_for_signal(const std::stop_token& stop) {
     return 0;
 }
 
+// The model runs in a sandboxed worker process unless the sandbox is disabled; then it
+// is loaded in-process through the same verified descriptor.
+struct EngineHandle {
+    std::unique_ptr<lisa::ModelFile> model;  // in-process mode only
+    std::unique_ptr<lisa::Engine> engine;
+};
+
+EngineHandle make_engine(const lisa::Config& cfg) {
+    EngineHandle handle;
+    if (cfg.sandbox_enabled) {
+        handle.engine = std::make_unique<lisa::SandboxedEngine>(cfg);
+        return handle;
+    }
+    lisa::log_warn("The sandbox is disabled: the model is parsed inside the server process");
+    handle.model = std::make_unique<lisa::ModelFile>(cfg.model_path);
+    if (!cfg.model_sha256.empty()) {
+        handle.model->verify_sha256(cfg.model_sha256);
+    }
+    lisa::Config local = cfg;
+    local.model_path = handle.model->proc_path();
+    handle.engine = std::make_unique<lisa::InferenceEngine>(local);
+    return handle;
+}
+
 int run_server(const lisa::Config& cfg) {
-    std::unique_ptr<lisa::InferenceEngine> engine;
+    EngineHandle handle;
     try {
-        lisa::log_info("Loading model", {{"path", cfg.model_path}});
-        engine = std::make_unique<lisa::InferenceEngine>(cfg);
+        lisa::log_info("Loading model",
+                       {{"path", cfg.model_path}, {"sandbox", cfg.sandbox_enabled}});
+        handle = make_engine(cfg);
     } catch (const std::exception& e) {
         lisa::log_error("Model loading failed", {{"error", e.what()}});
         return 1;
     }
-    const lisa::ModelInfo& info = engine->info();
+    lisa::Engine* engine = handle.engine.get();
+    const lisa::ModelInfo info = engine->info();
     lisa::log_info("Model loaded", {{"model", info.description},
                                     {"chat_template", info.chat_template},
                                     {"n_layer", info.n_layer},
@@ -118,43 +146,6 @@ int run_server(const lisa::Config& cfg) {
         return 1;
     }
     return 0;
-}
-
-// Experimental: forks a sandboxed child that runs the server (see sandbox.hpp).
-int run_sandboxed(const lisa::Config& cfg) {
-    const pid_t child = fork();
-    if (child < 0) {
-        lisa::log_error("fork failed");
-        return 1;
-    }
-    if (child == 0) {
-        if (lisa::sandbox_init(cfg) != 0) {
-            _exit(1);
-        }
-        _exit(run_server(cfg));
-    }
-
-    const sigset_t set = termination_signals();
-    const timespec timeout{0, kSignalPollNanos};
-    while (true) {
-        int status = 0;
-        if (waitpid(child, &status, WNOHANG) == child) {
-            if (WIFSIGNALED(status)) {
-                lisa::log_error("sandboxed server killed", {{"signal", WTERMSIG(status)}});
-                return 1;
-            }
-            const int code = WIFEXITED(status) ? WEXITSTATUS(status) : 1;
-            if (code != 0) {
-                lisa::log_error("sandboxed server exited", {{"code", code}});
-            }
-            return code;
-        }
-        if (sigtimedwait(&set, nullptr, &timeout) > 0) {
-            kill(child, SIGTERM);
-            waitpid(child, nullptr, 0);
-            return 0;
-        }
-    }
 }
 
 int run(int argc, char* argv[]) {
@@ -190,23 +181,15 @@ int run(int argc, char* argv[]) {
 
     lisa::log_info("LiSa-LLM starting",
                    {{"version", lisa::kVersion}, {"sandbox", cfg.sandbox_enabled}});
-    if (cfg.sandbox_enabled) {
-        if (!lisa::sandbox_available()) {
-            lisa::log_error(
-                "sandbox_enabled is set but this binary was built with LISA_SANDBOX=OFF");
-            return 1;
-        }
-        lisa::log_warn(
-            "The sandbox is experimental and does not isolate the server yet "
-            "(roadmap P2)");
-        return run_sandboxed(cfg);
-    }
     return run_server(cfg);
 }
 
 }  // namespace
 
 int main(int argc, char* argv[]) {
+    if (argc == 2 && std::string_view(argv[1]) == lisa::kWorkerFlag) {
+        return lisa::worker_main();
+    }
     try {
         return run(argc, argv);
     } catch (const std::exception& e) {
