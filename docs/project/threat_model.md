@@ -7,10 +7,28 @@ exploits a memory-safety bug in the model parser or tensor code and gets code ex
 the process that loads it. The sandbox's goal is that such code can do nothing useful: no
 host files, no network, no other processes, no persistence, no privilege escalation.
 
-The second attacker is a **network client** sending hostile prompts or requests. The broker
-validates every request (types, ranges, sizes) before anything reaches the model. Prompts are
-untrusted data that never become control tokens: raw prompts are tokenized with special-token
-parsing off, and chat messages that spell a special token are rejected.
+The second attacker is a **network client** sending hostile prompts or requests:
+- **Validation:** the broker checks every request (types, ranges, sizes, a 1 MiB body limit)
+  before anything reaches the model. The request decoder is fuzzed.
+- **Prompts:** they are untrusted data that never become control tokens. Raw prompts are
+  tokenized with special-token parsing off, and chat messages that spell a special token
+  are rejected.
+- **Authentication:** API keys are held only as SHA-256 digests and compared in constant
+  time. Off loopback, the server refuses placeholder or short keys.
+- **Exhaustion:** clients can't exhaust the broker. There is a bounded first-come,
+  first-served queue (429 when full), per-key token-bucket rate limits, read, write and
+  keep-alive timeouts, a capped thread pool and a cap on pending connections.
+- **TLS:** forward-secret AEAD suites only on TLS 1.2, optional TLS 1.3 minimum, optional
+  client certificates (mTLS), HSTS.
+
+The third case is a **compromised worker**, the expected result of a successful model
+exploit. The broker treats everything the worker sends as untrusted:
+- **Framing:** frames are size-checked (16 MiB) and parsed as JSON.
+- **Wrong shapes:** a message of the wrong shape counts as a protocol violation. The worker
+  is killed and restarted rather than letting the channel fall out of step.
+- **Testing:** this decoder is fuzzed too, and a test runs a deliberately hostile worker.
+- **Output:** the worker can still return arbitrary text, which the broker forwards to the
+  client as model output.
 
 ## Architecture
 
@@ -62,8 +80,11 @@ inside a live worker and expects every one to be killed by seccomp.
   and the sandbox needs them.
 - **Denial of service by the model**: a malicious model can burn CPU or return wrong
   tokens. Memory is capped (`RLIMIT_DATA`, or a cgroup when configured), and CPU time is not.
+  Network clients are rate-limited and queued, but a large volume of traffic from many
+  addresses without keys still needs a front-end limiter.
 - **The broker itself**: it handles network input with cpp-httplib and is not sandboxed. Run
-  it as an unprivileged user. The Docker image runs as UID 10001.
+  it as an unprivileged user. The Docker image runs as UID 10001. Its own request decoding
+  is fuzzed, and its memory safety is checked under ASan/UBSan in CI.
 - **Model confidentiality or integrity at rest**: `model_sha256` checks the file once at
   startup. Anyone who can write to the model file can change what gets loaded on the next start.
 - **GPU inference**: GPU drivers need device nodes and `ioctl`, so sandboxed CUDA inference is

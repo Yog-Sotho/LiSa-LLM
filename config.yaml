@@ -1,4 +1,6 @@
 # LiSa-LLM configuration. Start with: lisa --config config.yaml
+# Every key can be overridden with an environment variable LISA_<KEY> (e.g. LISA_LISTEN_PORT)
+# and some on the command line (--model, --host, --port). Unknown keys are errors.
 # The tokenizer is read from the GGUF file; no vocab/merges files are needed.
 model_path: "./models/model.gguf"
 model_alias: ""     # model id reported by /v1/models and responses; default: file name
@@ -8,15 +10,34 @@ chat_template: ""
 
 listen_addr: "127.0.0.1"
 listen_port: 8080
+
 enable_tls: false
 cert_file: ""
 key_file: ""
-# Clients send it as "Authorization: Bearer <key>" or "X-API-Key: <key>".
-# Empty disables authentication.
-# The server refuses to listen on a non-loopback address with this placeholder.
-api_key: "changeme"
+client_ca_file: ""           # set to require client certificates signed by this CA (mTLS)
+tls_min_version: "1.2"       # or "1.3"; TLS 1.2 uses forward-secret AEAD suites only
 
-n_threads: 8
+# Clients send a key as "Authorization: Bearer <key>" or "X-API-Key: <key>". Keys can come
+# from api_key, api_keys, api_keys_file (one per line) and LISA_API_KEYS (comma-separated).
+# An entry may be "sha256:<hex>" instead of the key itself (create one with
+# `lisa --hash-key`), so key files need not hold the keys. No key at all disables
+# authentication. Off loopback, the server refuses "changeme" and keys under 16 characters.
+api_key: "changeme"
+api_keys: []
+api_keys_file: ""
+
+# Admission control. The model serves one request at a time, in arrival order.
+max_queued_requests: 16      # waiting requests; more get 429 with Retry-After
+rate_limit_per_minute: 0     # per API key (per address without auth); 0 = unlimited
+rate_limit_burst: 10         # requests a key may send at once
+max_prompt_tokens: 0         # 0 = limited only by the context window
+read_timeout_seconds: 30     # to receive a request
+write_timeout_seconds: 60    # per write of a response (slow clients)
+keep_alive_timeout_seconds: 5
+shutdown_timeout_seconds: 30 # SIGTERM waits this long for running requests; a second
+                             # signal stops at once
+
+n_threads: 0                 # 0 = one per available CPU (more only slows it down)
 max_context: 4096            # capped at the model's training context
 temperature_default: 0.8     # 0 = greedy; used when a request omits temperature
 top_p_default: 0.95

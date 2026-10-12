@@ -11,6 +11,75 @@
 
 ## Progress log
 
+### 2026-10-12 — P3 complete (hardened API)
+
+Done:
+- **Authentication:** any number of API keys, from `api_key`, `api_keys`, `api_keys_file`
+  and `LISA_API_KEYS`.
+  - Keys are held only as SHA-256 digests. An entry can be `sha256:<hex>`, so key files
+    needn't contain keys; `lisa --hash-key` makes one.
+  - Each request compares the presented key against every digest with `CRYPTO_memcmp`.
+  - Logs carry a key id (`key-` plus 8 hex digits), never the key.
+  - Off loopback, the server refuses `changeme` and keys shorter than 16 characters.
+  - `/metrics` needs a key.
+- **Admission control:**
+  - **Queue:** a first-come, first-served queue in front of the model holds at most
+    `max_queued_requests` waiting requests. Beyond that the server answers 429 with a
+    `Retry-After` based on recent service times. A waiting client that disconnects leaves
+    the line.
+  - **Rate limits:** per-key token-bucket limits (`rate_limit_per_minute`, `rate_limit_burst`),
+    with a bounded client table.
+  - **Limits and timeouts:** `max_prompt_tokens`; read, write and keep-alive timeouts; a
+    thread pool sized so health checks still get a thread when the queue is full; at most
+    256 pending connections.
+- **TLS:** only forward-secret AEAD suites on TLS 1.2, optional `tls_min_version: "1.3"`,
+  renegotiation off, optional mutual TLS (`client_ca_file`) and HSTS.
+- **Observability:**
+  - **Request ids:** `X-Request-Id` on every response. A client's plain id is kept;
+    anything else is replaced, so ids can't forge log lines.
+  - **Access log:** one JSON line per request with method, path, status, duration, client
+    and token counts. httplib logs before writing a streamed body, so streams log
+    themselves when they end.
+  - **Readiness:** `/readyz` returns 503 while draining or when the worker keeps crashing.
+  - **Metrics:** Prometheus `/metrics` covers requests by route and status, latency, queue
+    wait, time to first token, tokens per second, rejections by reason, worker deaths and
+    restarts, and the queue gauges.
+- **Shutdown:** the first SIGTERM drains. New requests get 503, and running and queued
+  ones finish within `shutdown_timeout_seconds`; whatever remains is cancelled. A second
+  signal stops at once.
+- **Configuration and CLI:**
+  - Unknown config keys are errors. Every key can be overridden with `LISA_<KEY>`
+    environment variables, taken literally and not parsed as YAML.
+  - New flags: `--model`, `--host`, `--port`, `--check-config` and `--hash-key`, and the
+    server runs without a config file.
+  - Precedence: command line, then environment, then file.
+- **Thread count:** `n_threads: 0` (now the default) means one thread per CPU the process may
+  run on, and a larger value triggers a warning. Measured on 4 CPUs with 8 threads,
+  generation was 3× slower.
+- **Untrusted worker output:** a well-framed message of the wrong shape from the sandboxed
+  worker used to throw mid-generation and leave the channel out of step. It is now a
+  protocol violation: the worker is killed and restarted. A deliberately hostile test worker
+  covers this.
+- **Fuzzing:** libFuzzer targets for the OpenAI request decoder (`fuzz_request`, with a
+  dictionary) and for the broker's view of worker replies (`fuzz_worker_reply`: framing
+  plus decoding). Both run with ASan and UBSan, from seed corpora. CI runs each for 60 s on
+  pull requests and 15 min nightly. Locally, about 1.1 million runs found nothing.
+- **Tests:**
+  - **Coverage:** config loading, overrides and validation; the key store; queue order,
+    abandonment and closing; the token bucket; queue-full and rate-limit 429s; the prompt
+    limit; draining and cancelling at the deadline; readiness; metrics; request ids and
+    security headers; TLS (verified HTTPS, cipher and version policy, mTLS, bad files)
+    with certificates generated at run time; the hostile worker; CLI flags.
+  - **Without a model:** HTTP behaviour that depends on timing runs against a scripted
+    engine.
+  - **Mutation check:** the TLS tests were checked by removing the cipher and version
+    settings; both negative tests then failed.
+
+Estimated scores after P3 (self-assessed): Build 9, Security 8.5, Concurrency 7.5,
+Principles 8, Dependencies 8, Observability 8, Lifecycle 8, Quality 8.5, Dead code 9 →
+**health ≈ 8.3/10, SOTA ≈ 7.5/10**. The main gap to a SOTA server is throughput: requests
+are still served one at a time. P4 (continuous batching, prompt caching, benchmarks) is next.
+
 ### 2026-10-12 — P2 complete (broker/worker sandbox)
 
 Done (design and limits in [threat_model.md](threat_model.md)):

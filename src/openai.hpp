@@ -17,6 +17,9 @@ struct ResponseMeta {
     std::string model;
 };
 
+// `digits` random lowercase hex digits (ids, not secrets).
+[[nodiscard]] std::string random_hex(std::size_t digits);
+
 [[nodiscard]] ResponseMeta make_meta(std::string_view id_prefix, std::string model);
 
 // "stop" | "length"; cancelled generations have no finish reason.

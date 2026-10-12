@@ -22,6 +22,13 @@ struct ModelInfo {
     bool gpu_offload = false;
 };
 
+// Health of the engine, readable without waiting for a running generation.
+struct EngineStatus {
+    bool ready = true;                // can serve requests (now, or after a restart)
+    std::uint64_t worker_deaths = 0;  // sandboxed worker crashes or seccomp kills
+    std::uint64_t worker_restarts = 0;
+};
+
 enum class StopReason : std::uint8_t { eos, stop_sequence, length, cancelled };
 
 struct GenerationResult {
@@ -55,6 +62,8 @@ public:
                                       const PieceCallback& on_piece) = 0;
 
     [[nodiscard]] virtual ModelInfo info() const = 0;
+
+    [[nodiscard]] virtual EngineStatus status() const noexcept { return {}; }
 };
 
 }  // namespace lisa

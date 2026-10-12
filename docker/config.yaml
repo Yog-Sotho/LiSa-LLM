@@ -7,7 +7,7 @@ listen_addr: "0.0.0.0"
 listen_port: 8080
 api_key: "changeme"
 
-n_threads: 4
+n_threads: 0  # one per CPU the container may use
 max_context: 4096
 temperature_default: 0.8
 top_p_default: 0.95

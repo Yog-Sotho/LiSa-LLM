@@ -1,3 +1,4 @@
+#include "auth.hpp"
 #include "inference.hpp"
 #include "model_file.hpp"
 #include "sandboxed_engine.hpp"
@@ -8,9 +9,11 @@
 #include <pthread.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <charconv>
 #include <csignal>
 #include <ctime>
 #include <exception>
+#include <filesystem>
 #include <iostream>
 #include <lisa/version.hpp>
 #include <memory>
@@ -23,20 +26,56 @@
 namespace {
 
 constexpr std::string_view kDefaultConfigPath = "config.yaml";
-constexpr std::string_view kPlaceholderApiKey = "changeme";
 constexpr long kSignalPollNanos = 200'000'000;  // 200 ms
+constexpr int kUsageError = 2;
 
 struct CliOptions {
-    std::string config_path{kDefaultConfigPath};
+    std::string config_path;  // empty: config.yaml if it exists, else defaults only
+    bool config_explicit = false;
+    lisa::ConfigOverrides overrides;
+    bool check_config = false;
 };
 
 void print_usage(std::ostream& out) {
-    out << "Usage: lisa [--config <path>]\n"
+    out << "Usage: lisa [options]\n"
            "\n"
            "Options:\n"
-           "  -c, --config <path>  YAML configuration file (default: config.yaml)\n"
+           "  -c, --config <path>  YAML configuration file (default: config.yaml if present)\n"
+           "  -m, --model <path>   GGUF model file (overrides model_path)\n"
+           "      --host <addr>    Address to listen on (overrides listen_addr)\n"
+           "  -p, --port <port>    Port to listen on (overrides listen_port)\n"
+           "      --check-config   Validate the configuration and the model file, then exit\n"
+           "      --hash-key       Read an API key from stdin and print its sha256: entry\n"
            "  -v, --version        Print the version and exit\n"
-           "  -h, --help           Show this help and exit\n";
+           "  -h, --help           Show this help and exit\n"
+           "\n"
+           "Every config key can also be set with an environment variable named LISA_<KEY>,\n"
+           "e.g. LISA_LISTEN_PORT=9000 or LISA_API_KEYS=key1,key2.\n"
+           "Precedence: command line > environment > config file > defaults.\n";
+}
+
+std::optional<int> parse_port(std::string_view text) {
+    int port = 0;
+    const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), port);
+    if (error != std::errc() || end != text.data() + text.size()) {
+        return std::nullopt;
+    }
+    return port;
+}
+
+// Prints "sha256:<digest>" for the key on the first line of stdin.
+int hash_key() {
+    std::string key;
+    std::getline(std::cin, key);
+    if (!key.empty() && key.back() == '\r') {
+        key.pop_back();
+    }
+    if (key.empty()) {
+        std::cerr << "lisa: --hash-key expects the key on standard input\n";
+        return 1;
+    }
+    std::cout << "sha256:" << lisa::sha256_hex(key) << '\n';
+    return 0;
 }
 
 // Returns the parsed options, or an exit code when the process should stop.
@@ -54,14 +93,43 @@ std::optional<CliOptions> parse_cli(int argc, const char* const argv[], int& exi
             exit_code = 0;
             return std::nullopt;
         }
-        if ((arg == "-c" || arg == "--config") && i + 1 < argc) {
-            options.config_path = argv[++i];
+        if (arg == "--hash-key") {
+            exit_code = hash_key();
+            return std::nullopt;
+        }
+        if (arg == "--check-config") {
+            options.check_config = true;
+            continue;
+        }
+        const bool takes_value = arg == "-c" || arg == "--config" || arg == "-m" ||
+                                 arg == "--model" || arg == "--host" || arg == "-p" ||
+                                 arg == "--port";
+        if (takes_value && i + 1 < argc) {
+            const std::string_view next = argv[++i];
+            if (arg == "-c" || arg == "--config") {
+                options.config_path = std::string(next);
+                options.config_explicit = true;
+            } else if (arg == "-m" || arg == "--model") {
+                options.overrides.model_path = std::string(next);
+            } else if (arg == "--host") {
+                options.overrides.listen_addr = std::string(next);
+            } else {
+                options.overrides.listen_port = parse_port(next);
+                if (!options.overrides.listen_port) {
+                    std::cerr << "lisa: invalid port '" << next << "'\n";
+                    exit_code = kUsageError;
+                    return std::nullopt;
+                }
+            }
             continue;
         }
         std::cerr << "lisa: unknown or incomplete argument '" << arg << "'\n";
         print_usage(std::cerr);
-        exit_code = 2;
+        exit_code = kUsageError;
         return std::nullopt;
+    }
+    if (!options.config_explicit && std::filesystem::exists(kDefaultConfigPath)) {
+        options.config_path = std::string(kDefaultConfigPath);
     }
     return options;
 }
@@ -112,6 +180,21 @@ EngineHandle make_engine(const lisa::Config& cfg) {
     return handle;
 }
 
+// --check-config: the model file must be readable (and match model_sha256 if set).
+int check_model(const lisa::Config& cfg) {
+    try {
+        const lisa::ModelFile model(cfg.model_path);
+        if (!cfg.model_sha256.empty()) {
+            model.verify_sha256(cfg.model_sha256);
+        }
+    } catch (const std::exception& e) {
+        lisa::log_error("Invalid configuration", {{"error", e.what()}});
+        return 1;
+    }
+    std::cout << "configuration OK\n";
+    return 0;
+}
+
 int run_server(const lisa::Config& cfg) {
     EngineHandle handle;
     try {
@@ -134,9 +217,17 @@ int run_server(const lisa::Config& cfg) {
 
     try {
         lisa::HttpServer server(*engine, cfg);
-        const std::jthread signal_thread([&server](const std::stop_token& stop) {
-            if (const int sig = wait_for_signal(stop); sig != 0) {
-                lisa::log_info("Shutting down", {{"signal", sig}});
+        // First SIGINT/SIGTERM: drain gracefully. A second one: stop at once.
+        std::jthread drain_thread;
+        const std::jthread signal_thread([&server, &drain_thread](const std::stop_token& stop) {
+            const int sig = wait_for_signal(stop);
+            if (sig == 0) {
+                return;
+            }
+            lisa::log_info("Shutting down", {{"signal", sig}});
+            drain_thread = std::jthread([&server] { server.shutdown(); });
+            if (const int again = wait_for_signal(stop); again != 0) {
+                lisa::log_warn("Second signal: stopping without waiting", {{"signal", again}});
                 server.stop();
             }
         });
@@ -157,22 +248,26 @@ int run(int argc, char* argv[]) {
 
     lisa::Config cfg;
     try {
-        cfg = lisa::load_config(options->config_path);
+        cfg = lisa::load_config(options->config_path, lisa::process_environment(),
+                                options->overrides);
     } catch (const std::exception& e) {
         lisa::log_error("Invalid configuration", {{"error", e.what()}});
         return 1;
     }
 
-    if (cfg.api_key == kPlaceholderApiKey && !lisa::is_loopback_address(cfg.listen_addr)) {
-        lisa::log_error(
-            "Refusing to listen on a non-loopback address with the placeholder "
-            "api_key 'changeme'; set a strong api_key",
-            {{"listen_addr", cfg.listen_addr}});
+    if (const std::string problem = lisa::exposure_problem(cfg); !problem.empty()) {
+        lisa::log_error("Refusing to listen on a non-loopback address: " + problem +
+                            "; use a random key of at least 16 characters",
+                        {{"listen_addr", cfg.listen_addr}});
         return 1;
     }
-    if (cfg.api_key.empty() && !lisa::is_loopback_address(cfg.listen_addr)) {
+    if (cfg.api_key.empty() && cfg.api_keys.empty() &&
+        !lisa::is_loopback_address(cfg.listen_addr)) {
         lisa::log_warn("API key authentication is disabled on a non-loopback address",
                        {{"listen_addr", cfg.listen_addr}});
+    }
+    if (options->check_config) {
+        return check_model(cfg);
     }
 
     // Block termination signals before any thread starts; a dedicated thread waits for them.

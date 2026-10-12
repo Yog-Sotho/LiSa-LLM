@@ -38,6 +38,11 @@ function(lisa_configure_target target)
         target_link_options(${target} PRIVATE -fsanitize=${LISA_SANITIZERS})
     endif()
 
+    if(LISA_FUZZ)
+        # Coverage feedback for libFuzzer in every first-party target.
+        target_compile_options(${target} PRIVATE -fsanitize=fuzzer-no-link)
+    endif()
+
     if(LISA_HARDENING)
         target_compile_options(${target} PRIVATE -fstack-protector-strong -fstack-clash-protection)
         # FORTIFY_SOURCE needs optimisation and conflicts with ASan's interceptors.

@@ -124,8 +124,9 @@ InferenceEngine::InferenceEngine(const Config& cfg) {
     llama_context_params ctx_params = llama_context_default_params();
     ctx_params.n_ctx = n_ctx;
     ctx_params.n_batch = n_ctx;  // the whole prompt is evaluated in one llama_decode call
-    ctx_params.n_threads = cfg.n_threads;
-    ctx_params.n_threads_batch = cfg.n_threads;
+    const int threads = cfg.n_threads > 0 ? cfg.n_threads : available_cpus();
+    ctx_params.n_threads = threads;
+    ctx_params.n_threads_batch = threads;
     ctx_params.no_perf = true;
 
     ctx_.reset(llama_init_from_model(model_.get(), ctx_params));
