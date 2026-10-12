@@ -190,7 +190,8 @@ HttpServer::HttpServer(Engine& engine, Config cfg)
       created_(std::chrono::duration_cast<std::chrono::seconds>(
                    std::chrono::system_clock::now().time_since_epoch())
                    .count()),
-      queue_(static_cast<std::size_t>(cfg_.max_queued_requests)),
+      queue_(static_cast<std::size_t>(cfg_.parallel_slots),
+             static_cast<std::size_t>(cfg_.max_queued_requests)),
       rate_limiter_(cfg_.rate_limit_per_minute, cfg_.rate_limit_burst),
       server_(make_server(cfg_)) {
     configure_server();
@@ -207,8 +208,9 @@ void HttpServer::configure_server() {
 
     // Every queued request holds a thread while it waits, so the pool grows past the queue
     // size: health checks, /metrics and refusals must still get a thread.
-    const std::size_t max_threads = std::max(
-        kBaseThreads, static_cast<std::size_t>(cfg_.max_queued_requests) + 1 + kSpareThreads);
+    const std::size_t max_threads =
+        std::max(kBaseThreads, static_cast<std::size_t>(cfg_.max_queued_requests) +
+                                   static_cast<std::size_t>(cfg_.parallel_slots) + kSpareThreads);
     server_->new_task_queue = [max_threads] {
         // NOLINTNEXTLINE(cppcoreguidelines-owning-memory): httplib takes ownership
         return new httplib::ThreadPool(kBaseThreads, max_threads, kMaxPendingConnections);
@@ -287,7 +289,7 @@ void HttpServer::register_routes() {
     server_->Get("/metrics", [this](const httplib::Request&, httplib::Response& res) {
         MetricsGauges gauges;
         gauges.queued = queue_.waiting();
-        gauges.busy = queue_.busy();
+        gauges.running = queue_.running();
         gauges.draining = draining_;
         gauges.engine = engine_.status();
         res.set_content(metrics_.render(gauges), kPrometheusText);
@@ -408,8 +410,8 @@ void HttpServer::respond(const httplib::Request& req, httplib::Response& res, Ap
                                               const GenerationTimer& timer) {
         t_request.prompt_tokens = result.prompt_tokens;
         t_request.completion_tokens = result.completion_tokens;
-        metrics_.generation_finished(result.prompt_tokens, result.completion_tokens, queue_seconds,
-                                     timer.first_token_seconds(), timer.elapsed_seconds());
+        metrics_.generation_finished(result, queue_seconds, timer.first_token_seconds(),
+                                     timer.elapsed_seconds());
     };
 
     if (!params.stream) {
@@ -592,7 +594,7 @@ void HttpServer::run() {
 
 void HttpServer::shutdown() {
     draining_ = true;
-    log_info("Draining requests", {{"running", queue_.busy()},
+    log_info("Draining requests", {{"running", queue_.running()},
                                    {"queued", queue_.waiting()},
                                    {"timeout_seconds", cfg_.shutdown_timeout_seconds}});
     const auto deadline = SteadyClock::now() + std::chrono::seconds(cfg_.shutdown_timeout_seconds);

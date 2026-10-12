@@ -32,7 +32,7 @@ private:
 // Values that live elsewhere and are sampled when /metrics is scraped.
 struct MetricsGauges {
     std::size_t queued = 0;
-    bool busy = false;
+    std::size_t running = 0;
     bool draining = false;
     EngineStatus engine;
 };
@@ -45,9 +45,8 @@ public:
     // `route` must be one of the server's routes (or "other") to bound label cardinality.
     void request_finished(std::string_view route, int status, double seconds);
     void rejected(std::string_view reason);  // queue_full, rate_limited, unauthorized, draining
-    void generation_finished(std::size_t prompt_tokens, std::size_t completion_tokens,
-                             double queue_seconds, double first_token_seconds,
-                             double generation_seconds);
+    void generation_finished(const GenerationResult& result, double queue_seconds,
+                             double first_token_seconds, double generation_seconds);
 
     [[nodiscard]] std::string render(const MetricsGauges& gauges) const;
 
@@ -57,6 +56,7 @@ private:
     std::map<std::string, Histogram> request_seconds_;
     std::map<std::string, std::uint64_t> rejected_;
     std::uint64_t prompt_tokens_ = 0;
+    std::uint64_t cached_tokens_ = 0;
     std::uint64_t completion_tokens_ = 0;
     std::uint64_t generations_ = 0;
     Histogram queue_seconds_;

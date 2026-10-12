@@ -12,11 +12,15 @@
 #include <algorithm>
 #include <array>
 #include <cerrno>
+#include <condition_variable>
 #include <csignal>
 #include <cstring>
+#include <functional>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <utility>
 
 namespace lisa {
@@ -63,6 +67,82 @@ int duplicate_high(int fd) {
 
 }  // namespace
 
+struct SandboxedEngine::Mailbox {
+    std::condition_variable changed;
+    std::deque<json> messages;
+};
+
+struct SandboxedEngine::Worker {
+    pid_t pid = -1;
+    // Opened once and closed by the destructor only (after the reader thread has joined),
+    // so concurrent send()/shutdown() calls always see a valid descriptor.
+    ipc::Channel channel;
+    std::mutex send_mutex;  // one writer at a time
+    std::atomic<std::uint64_t> next_id{1};
+    std::thread reader;
+
+    std::mutex mutex;  // guards the members below
+    std::unordered_map<std::uint64_t, std::shared_ptr<Mailbox>> mailboxes;
+    bool dead = false;     // no more replies will arrive
+    bool reaped = false;   // pid has been waited for (must not be signalled any more)
+    bool counted = false;  // the death was logged and counted
+    std::string death;     // why it died, for errors
+    WorkerExit exit;       // set before `dead`
+
+    // Sends one request. Throws std::runtime_error when the worker is gone.
+    void send(const json& message) {
+        const std::lock_guard<std::mutex> lock(send_mutex);
+        try {
+            channel.send(message);
+        } catch (const ipc::IpcError&) {
+            // The reader thread notices the same failure and reports the death.
+            throw std::runtime_error("inference worker died (connection lost)");
+        }
+    }
+
+    std::shared_ptr<Mailbox> open(std::uint64_t id) {
+        auto box = std::make_shared<Mailbox>();
+        const std::lock_guard<std::mutex> lock(mutex);
+        if (dead) {
+            throw std::runtime_error("inference worker died (" + death + ")");
+        }
+        mailboxes.emplace(id, box);
+        return box;
+    }
+
+    void close(std::uint64_t id) {
+        const std::lock_guard<std::mutex> lock(mutex);
+        mailboxes.erase(id);
+    }
+
+    // Next message for `box`; throws std::runtime_error once the worker is dead.
+    json next(const std::shared_ptr<Mailbox>& box) {
+        std::unique_lock<std::mutex> lock(mutex);
+        box->changed.wait(lock, [&] { return !box->messages.empty() || dead; });
+        if (box->messages.empty()) {
+            throw std::runtime_error("inference worker died (" + death + ")");
+        }
+        json message = std::move(box->messages.front());
+        box->messages.pop_front();
+        return message;
+    }
+};
+
+// Removes a request's mailbox when the caller is done with it, however it leaves.
+class SandboxedEngine::MailboxCloser {
+public:
+    MailboxCloser(Worker& worker, std::uint64_t id) : worker_(worker), id_(id) {}
+    MailboxCloser(const MailboxCloser&) = delete;
+    MailboxCloser& operator=(const MailboxCloser&) = delete;
+    MailboxCloser(MailboxCloser&&) = delete;
+    MailboxCloser& operator=(MailboxCloser&&) = delete;
+    ~MailboxCloser() { worker_.close(id_); }
+
+private:
+    Worker& worker_;
+    std::uint64_t id_;
+};
+
 SandboxedEngine::SandboxedEngine(const Config& cfg, Options options)
     : cfg_(cfg), options_(std::move(options)), model_(cfg.model_path) {
     if (!sandbox_available()) {
@@ -79,17 +159,24 @@ SandboxedEngine::SandboxedEngine(const Config& cfg, Options options)
     if (!cfg_.model_sha256.empty()) {
         model_.verify_sha256(cfg_.model_sha256);
     }
-    start_worker();
+    worker_ = start_worker();
 }
 
 SandboxedEngine::~SandboxedEngine() {
-    if (pid_ > 0) {
-        channel_.close();  // the worker exits when the broker hangs up
-        (void)reap_worker(/*kill_first=*/false);
+    const std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+    if (worker_) {
+        {
+            const std::lock_guard<std::mutex> worker_lock(worker_->mutex);
+            worker_->counted = true;  // an orderly stop, not a death
+        }
+        worker_->channel.shutdown();  // the worker exits when the broker hangs up
+        if (worker_->reader.joinable()) {
+            worker_->reader.join();
+        }
     }
 }
 
-void SandboxedEngine::start_worker() {
+std::shared_ptr<SandboxedEngine::Worker> SandboxedEngine::start_worker() {
     std::array<int, 2> sv{};
     if (::socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sv.data()) != 0) {
         throw std::runtime_error(std::string("sandbox: socketpair: ") + std::strerror(errno));
@@ -140,62 +227,141 @@ void SandboxedEngine::start_worker() {
         throw std::runtime_error("sandbox: cannot start worker '" + exe +
                                  "': " + std::strerror(spawned));
     }
-    pid_ = pid;
-    channel_ = std::move(broker_end);
+    auto worker = std::make_shared<Worker>();
+    worker->pid = pid;
+    worker->channel = std::move(broker_end);
 
     json reply;
     try {
-        channel_.send({{"op", "init"}, {"settings", WorkerSettings::from_config(cfg_)}});
-        reply = channel_.receive();
+        worker->channel.send({{"op", "init"}, {"settings", WorkerSettings::from_config(cfg_)}});
+        reply = worker->channel.receive();
     } catch (const ipc::IpcError& e) {
-        const WorkerExit exit = reap_worker(!e.peer_closed());
+        const WorkerExit exit = reap(*worker, !e.peer_closed());
         std::string message = "sandboxed worker failed to start (" + exit.description + ")";
         if (exit.signal != SIGSYS && cfg_.memory_limit_bytes > 0) {
             // Out-of-memory inside libllama usually ends in an assertion or a crash.
-            message += "; if the log shows an allocation failure, raise memory_limit_bytes";
+            message +=
+                "; if the log shows an allocation failure, raise memory_limit_bytes "
+                "or lower parallel_slots or max_context";
         }
         throw std::runtime_error(message);
     }
     try {
         if (reply.contains("fatal")) {
-            channel_.close();
-            (void)reap_worker(false);
+            worker->channel.close();
+            (void)reap(*worker, false);
             throw std::runtime_error(reply["fatal"].get<std::string>());
         }
         const std::lock_guard<std::mutex> lock(info_mutex_);
         info_ = reply.at("ready").get<ModelInfo>();
         landlock_abi_ = reply.value("landlock_abi", 0);
     } catch (const json::exception& e) {
-        (void)reap_worker(true);
+        (void)reap(*worker, true);
         throw std::runtime_error(std::string("sandboxed worker sent a malformed reply: ") +
                                  e.what());
     }
+    worker_pid_ = worker->pid;
     worker_up_ = true;
-    log_info("Sandboxed worker ready", {{"pid", pid_}, {"landlock_abi", landlock_abi_}});
+    log_info("Sandboxed worker ready", {{"pid", worker->pid}, {"landlock_abi", landlock_abi_}});
+    worker->reader = std::thread([this, worker] { read_loop(worker); });
+    return worker;
 }
 
-SandboxedEngine::WorkerExit SandboxedEngine::reap_worker(bool kill_first) {
-    WorkerExit exit;
-    if (pid_ <= 0) {
-        exit.description = "not running";
-        return exit;
+void SandboxedEngine::read_loop(const std::shared_ptr<Worker>& worker) {
+    std::string reason;
+    bool kill_first = false;
+    while (true) {
+        json message;
+        try {
+            message = worker->channel.receive();
+        } catch (const ipc::IpcError& e) {
+            reason = e.what();
+            kill_first = !e.peer_closed();
+            break;
+        }
+        const json* id = message.is_object() ? &message["id"] : nullptr;
+        if (id == nullptr || !id->is_number_unsigned()) {
+            reason = "malformed message from the worker: no request id";
+            kill_first = true;
+            break;
+        }
+        const std::lock_guard<std::mutex> lock(worker->mutex);
+        if (const auto it = worker->mailboxes.find(id->get<std::uint64_t>());
+            it != worker->mailboxes.end()) {
+            it->second->messages.push_back(std::move(message));
+            it->second->changed.notify_all();
+        }  // else: for a request whose caller has gone (e.g. its HTTP thread threw)
+    }
+
+    worker_up_ = false;
+    const WorkerExit exit = reap(*worker, kill_first);
+    bool report = false;
+    {
+        const std::lock_guard<std::mutex> lock(worker->mutex);
+        if (!worker->counted) {
+            worker->counted = true;
+            report = true;
+            if (worker->death.empty()) {
+                worker->death = exit.description;
+            }
+        }
+        worker->exit = exit;
+        worker->dead = true;
+        for (const auto& [request_id, box] : worker->mailboxes) {
+            box->changed.notify_all();
+        }
+    }
+    // The descriptor stays open until the Worker is destroyed: other threads may still
+    // call channel.shutdown(), and a closed (reused) descriptor number must never be hit.
+    if (report) {
+        ++worker_deaths_;
+        log_error("Inference worker died", {{"status", exit.description}, {"error", reason}});
+    }
+}
+
+void SandboxedEngine::kill_worker(Worker& worker, const std::string& reason) {
+    bool report = false;
+    {
+        const std::lock_guard<std::mutex> lock(worker.mutex);
+        if (!worker.counted) {
+            worker.counted = true;
+            report = true;
+            worker.death = reason;
+        }
+        if (!worker.reaped) {
+            ::kill(worker.pid, SIGKILL);  // the reader thread reaps it and wakes everyone
+        }
     }
     worker_up_ = false;
-    channel_.close();
+    if (report) {
+        ++worker_deaths_;
+        log_error("Inference worker died", {{"status", "killed by the broker"}, {"error", reason}});
+    }
+}
+
+SandboxedEngine::WorkerExit SandboxedEngine::reap(Worker& worker, bool kill_first) const {
+    WorkerExit exit;
     if (kill_first) {
-        ::kill(pid_, SIGKILL);
+        const std::lock_guard<std::mutex> lock(worker.mutex);
+        ::kill(worker.pid, SIGKILL);
     }
     int wait_status = 0;
     const auto deadline = std::chrono::steady_clock::now() + kShutdownGrace;
     while (true) {
-        const pid_t r = ::waitpid(pid_, &wait_status, WNOHANG);
-        if (r == pid_ || (r < 0 && errno != EINTR)) {
-            break;
-        }
-        if (std::chrono::steady_clock::now() >= deadline) {
-            ::kill(pid_, SIGKILL);
-            ::waitpid(pid_, &wait_status, 0);
-            break;
+        {
+            // Under the lock, so kill_worker() never signals a reaped (reusable) pid.
+            const std::lock_guard<std::mutex> lock(worker.mutex);
+            const pid_t r = ::waitpid(worker.pid, &wait_status, WNOHANG);
+            if (r == worker.pid || (r < 0 && errno != EINTR)) {
+                worker.reaped = true;
+                break;
+            }
+            if (std::chrono::steady_clock::now() >= deadline) {
+                ::kill(worker.pid, SIGKILL);
+                ::waitpid(worker.pid, &wait_status, 0);
+                worker.reaped = true;
+                break;
+            }
         }
         std::this_thread::sleep_for(kReapPoll);
     }
@@ -219,24 +385,26 @@ SandboxedEngine::WorkerExit SandboxedEngine::reap_worker(bool kill_first) {
     } else {
         exit.description = "exited with code " + std::to_string(exit.exit_code);
     }
-
     if (!cfg_.sandbox_cgroup.empty()) {
-        ::rmdir((cfg_.sandbox_cgroup + "/lisa-worker-" + std::to_string(pid_)).c_str());
+        ::rmdir((cfg_.sandbox_cgroup + "/lisa-worker-" + std::to_string(worker.pid)).c_str());
     }
-    pid_ = -1;
     return exit;
 }
 
-void SandboxedEngine::worker_failed(const ipc::IpcError& error) {
-    const WorkerExit exit = reap_worker(/*kill_first=*/!error.peer_closed());
-    ++worker_deaths_;
-    log_error("Inference worker died", {{"status", exit.description}, {"error", error.what()}});
-    throw std::runtime_error("inference worker died (" + exit.description + ")");
-}
-
-void SandboxedEngine::ensure_worker() {
-    if (channel_.is_open()) {
-        return;
+std::shared_ptr<SandboxedEngine::Worker> SandboxedEngine::acquire_worker() {
+    const std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+    if (worker_) {
+        const std::lock_guard<std::mutex> worker_lock(worker_->mutex);
+        if (!worker_->dead && !worker_->counted) {
+            return worker_;
+        }
+    }
+    if (worker_) {
+        // Its reader thread is finishing (or done) reaping; wait for it.
+        if (worker_->reader.joinable()) {
+            worker_->reader.join();
+        }
+        worker_.reset();
     }
     const auto now = std::chrono::steady_clock::now();
     while (!restarts_.empty() && now - restarts_.front() > options_.restart_window) {
@@ -250,77 +418,94 @@ void SandboxedEngine::ensure_worker() {
     restarts_.push_back(now);
     ++worker_restarts_;
     log_warn("Restarting the inference worker");
-    start_worker();
+    worker_ = start_worker();
+    return worker_;
 }
 
-json SandboxedEngine::call(const json& request) {
-    ensure_worker();
-    json reply;
+template <typename Decode>
+auto SandboxedEngine::decode_reply(Worker& worker, Decode&& decode) -> decltype(decode()) {
     try {
-        channel_.send(request);
-        reply = channel_.receive();
-    } catch (const ipc::IpcError& e) {
-        worker_failed(e);
+        return decode();
+    } catch (const json::exception& e) {
+        const std::string reason = std::string("malformed message from the worker: ") + e.what();
+        kill_worker(worker, reason);
+        throw std::runtime_error("inference worker died (" + reason + ")");
     }
-    if (reply.contains("error")) {
-        throw_error_reply(reply);
-    }
-    return reply;
+}
+
+void SandboxedEngine::call(json request, const std::function<void(const json&)>& decode) {
+    const std::shared_ptr<Worker> worker = acquire_worker();
+    const std::uint64_t id = worker->next_id++;
+    request["id"] = id;
+    const std::shared_ptr<Mailbox> box = worker->open(id);
+    const MailboxCloser closer(*worker, id);
+    worker->send(request);
+    const json reply = worker->next(box);
+    decode_reply(*worker, [&] {
+        if (reply.contains("error")) {
+            throw_error_reply(reply);
+        }
+        decode(reply);
+    });
 }
 
 std::vector<Token> SandboxedEngine::tokenize(std::string_view text) {
-    const std::lock_guard<std::mutex> lock(mutex_);
-    return decode_worker_reply([&] {
-        return call({{"op", "tokenize"}, {"text", std::string(text)}})
-            .at("tokens")
-            .get<std::vector<Token>>();
-    });
+    std::vector<Token> tokens;
+    call({{"op", "tokenize"}, {"text", std::string(text)}},
+         [&](const json& reply) { tokens = reply.at("tokens").get<std::vector<Token>>(); });
+    return tokens;
 }
 
 std::vector<Token> SandboxedEngine::tokenize_chat(const std::vector<ChatMessage>& messages) {
-    const std::lock_guard<std::mutex> lock(mutex_);
-    return decode_worker_reply([&] {
-        return call({{"op", "tokenize_chat"}, {"messages", messages}})
-            .at("tokens")
-            .get<std::vector<Token>>();
-    });
+    std::vector<Token> tokens;
+    call({{"op", "tokenize_chat"}, {"messages", messages}},
+         [&](const json& reply) { tokens = reply.at("tokens").get<std::vector<Token>>(); });
+    return tokens;
 }
 
 GenerationResult SandboxedEngine::generate(const std::vector<Token>& prompt_tokens,
                                            const GenerationParams& params,
                                            const PieceCallback& on_piece) {
-    const std::lock_guard<std::mutex> lock(mutex_);
-    ensure_worker();
-    return decode_worker_reply([&] { return generate_locked(prompt_tokens, params, on_piece); });
-}
+    const std::shared_ptr<Worker> worker = acquire_worker();
+    const std::uint64_t id = worker->next_id++;
+    const std::shared_ptr<Mailbox> box = worker->open(id);
+    const MailboxCloser closer(*worker, id);
+    worker->send({{"op", "generate"}, {"id", id}, {"tokens", prompt_tokens}, {"params", params}});
 
-GenerationResult SandboxedEngine::generate_locked(const std::vector<Token>& prompt_tokens,
-                                                  const GenerationParams& params,
-                                                  const PieceCallback& on_piece) {
-    try {
-        bool cancelled = false;
-        channel_.send({{"op", "generate"}, {"tokens", prompt_tokens}, {"params", params}});
-        while (true) {
-            json message = channel_.receive();
+    bool cancelled = false;
+    const auto cancel = [&] {
+        if (!cancelled) {
+            cancelled = true;
+            worker->send({{"op", "cancel"}, {"id", id}});
+        }
+    };
+    while (true) {
+        const json message = worker->next(box);
+        bool keep_going = true;
+        std::optional<GenerationResult> done;
+        decode_reply(*worker, [&] {
             if (message.contains("piece")) {
-                if (!cancelled && !on_piece(message["piece"].get_ref<const std::string&>())) {
-                    cancelled = true;
-                    channel_.send({{"op", "cancel"}});
+                const auto& piece = message.at("piece").get_ref<const std::string&>();
+                if (!cancelled) {
+                    keep_going = on_piece(piece);
                 }
             } else if (message.contains("done")) {
-                auto result = message["done"].get<GenerationResult>();
-                if (cancelled) {
-                    result.reason = StopReason::cancelled;
-                }
-                return result;
+                done = message.at("done").get<GenerationResult>();
             } else if (message.contains("error")) {
                 throw_error_reply(message);
             } else {
-                throw ipc::IpcError("unexpected message from worker", false);
+                throw json::other_error::create(501, "unexpected message", nullptr);
             }
+        });
+        if (done) {
+            if (cancelled) {
+                done->reason = StopReason::cancelled;
+            }
+            return *done;
         }
-    } catch (const ipc::IpcError& e) {
-        worker_failed(e);
+        if (!keep_going) {
+            cancel();  // keep reading until the worker confirms with "done"
+        }
     }
 }
 
@@ -330,23 +515,21 @@ ModelInfo SandboxedEngine::info() const {
 }
 
 json SandboxedEngine::probe(const json& request) {
-    const std::lock_guard<std::mutex> lock(mutex_);
-    ensure_worker();
+    const std::shared_ptr<Worker> worker = acquire_worker();
+    json message = request;
+    message["op"] = "probe";
     try {
-        json message = request;
-        message["op"] = "probe";
-        channel_.send(message);
-        json reply = channel_.receive();
-        if (reply.contains("error")) {
-            throw_error_reply(reply);
+        json answer;
+        call(message, [&](const json& reply) { answer = reply.at("probe"); });
+        return answer;
+    } catch (const std::runtime_error&) {
+        const std::lock_guard<std::mutex> lock(worker->mutex);
+        if (!worker->dead) {
+            throw;
         }
-        return reply.at("probe");
-    } catch (const ipc::IpcError& e) {
-        const WorkerExit exit = reap_worker(!e.peer_closed());
-        ++worker_deaths_;
-        return json{{"worker_died", exit.description},
-                    {"signal", exit.signal},
-                    {"exit_code", exit.exit_code}};
+        return json{{"worker_died", worker->exit.description},
+                    {"signal", worker->exit.signal},
+                    {"exit_code", worker->exit.exit_code}};
     }
 }
 
@@ -360,7 +543,7 @@ EngineStatus SandboxedEngine::status() const noexcept {
 }
 
 pid_t SandboxedEngine::worker_pid() const {
-    return pid_;
+    return worker_pid_;
 }
 
 int SandboxedEngine::landlock_abi() const {

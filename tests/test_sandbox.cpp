@@ -10,17 +10,20 @@
 #include <httplib.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <algorithm>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include <csignal>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <sstream>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace {
 
@@ -150,6 +153,38 @@ TEST_CASE("sandbox: generation matches the in-process engine", "[sandbox]") {
     CHECK(engine->info().n_layer == reference.info().n_layer);
     CHECK(engine->tokenize_chat({{"user", "Hello"}}) ==
           reference.tokenize_chat({{"user", "Hello"}}));
+}
+
+TEST_CASE("sandbox: concurrent generations are batched in the worker", "[sandbox]") {
+    REQUIRE_ENGINE(engine);
+    const std::vector<std::string> prompts = {"Once upon a time", "The little dog", "In the forest",
+                                              "Lily was happy",   "One day, Tom",   "The sun was"};
+    std::vector<std::string> alone;
+    alone.reserve(prompts.size());
+    std::transform(prompts.begin(), prompts.end(), std::back_inserter(alone),
+                   [&](const std::string& prompt) { return run(*engine, prompt, 12); });
+    std::vector<std::string> together(prompts.size());
+    std::string cancelled_text;
+    std::vector<std::thread> threads;
+    for (std::size_t i = 0; i < prompts.size(); ++i) {
+        threads.emplace_back([&, i] { together[i] = run(*engine, prompts[i], 12); });
+    }
+    // One more that the client abandons early; the others must be unaffected.
+    threads.emplace_back([&] {
+        int pieces = 0;
+        const auto result = engine->generate(engine->tokenize("Tom had a ball"), greedy(60),
+                                             [&](std::string_view piece) {
+                                                 cancelled_text += piece;
+                                                 return ++pieces < 2;
+                                             });
+        CHECK(result.reason == lisa::StopReason::cancelled);
+    });
+    for (std::thread& t : threads) {
+        t.join();
+    }
+    CHECK(together == alone);
+    CHECK_FALSE(cancelled_text.empty());
+    CHECK(run(*engine, prompts[0], 12) == alone[0]);  // the channel is still in sync
 }
 
 TEST_CASE("sandbox: request errors cross the boundary", "[sandbox]") {
@@ -333,6 +368,10 @@ TEST_CASE("sandbox: a worker that breaks the protocol is killed and restarted", 
     CHECK_THROWS_WITH(engine->generate({1}, params, [](std::string_view) { return true; }),
                       ContainsSubstring("inference worker died"));
     CHECK(engine->status().worker_deaths == 2);
+
+    // A reply that names no request is a protocol violation too.
+    CHECK(engine->probe({{"name", "anything"}}).contains("worker_died"));
+    CHECK(engine->status().worker_deaths == 3);
 
     cfg.chat_template = "malformed-ready";
     CHECK_THROWS_WITH(lisa::SandboxedEngine(cfg, options), ContainsSubstring("malformed reply"));

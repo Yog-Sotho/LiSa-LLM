@@ -9,6 +9,7 @@
 #include <climits>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 
 namespace lisa {
 
@@ -18,6 +19,39 @@ constexpr std::size_t kPieceBufferSize = 64;
 constexpr std::int32_t kPenaltyLastN = 64;  // llama.cpp's default repetition window
 constexpr std::size_t kMaxBuiltinTemplates = 256;
 constexpr const char* kFallbackChatTemplate = "chatml";
+constexpr std::uint32_t kBatchTokens = 512;  // tokens evaluated per scheduler step
+constexpr std::uint32_t kKvCellAlignment = 256;
+// Copying a whole slot cache only pays off when it saves evaluating this many tokens.
+constexpr std::size_t kMinCopiedTokens = 32;
+
+ggml_type kv_type(const std::string& name) {
+    if (name == "q8_0") {
+        return GGML_TYPE_Q8_0;
+    }
+    if (name == "q4_0") {
+        return GGML_TYPE_Q4_0;
+    }
+    return GGML_TYPE_F16;
+}
+
+llama_flash_attn_type flash_attn_type(const std::string& name) {
+    if (name == "on") {
+        return LLAMA_FLASH_ATTN_TYPE_ENABLED;
+    }
+    if (name == "off") {
+        return LLAMA_FLASH_ATTN_TYPE_DISABLED;
+    }
+    return LLAMA_FLASH_ATTN_TYPE_AUTO;
+}
+
+std::size_t common_prefix(const std::vector<Token>& a, const std::vector<Token>& b) {
+    const std::size_t n = std::min(a.size(), b.size());
+    std::size_t i = 0;
+    while (i < n && a[i] == b[i]) {
+        ++i;
+    }
+    return i;
+}
 
 // Routes llama.cpp/ggml warnings and errors into the structured log; INFO/DEBUG chatter
 // is dropped.
@@ -52,14 +86,52 @@ struct SamplerDeleter {
 };
 using SamplerPtr = std::unique_ptr<llama_sampler, SamplerDeleter>;
 
-// Same order as llama.cpp's defaults: penalties → top-k → top-p → min-p → temperature →
-// random draw (or greedy when temperature is 0).
-SamplerPtr make_sampler(const SamplingParams& s, std::int32_t n_vocab) {
+// JSON object grammar: grammars/json.gbnf from llama.cpp (MIT licence).
+constexpr const char* kJsonGrammar = R"gbnf(
+root   ::= object
+value  ::= object | array | string | number | ("true" | "false" | "null") ws
+
+object ::=
+  "{" ws (
+            string ":" ws value
+    ("," ws string ":" ws value)*
+  )? "}" ws
+
+array  ::=
+  "[" ws (
+            value
+    ("," ws value)*
+  )? "]" ws
+
+string ::=
+  "\"" (
+    [^"\\\x7F\x00-\x1F] |
+    "\\" (["\\bfnrt] | "u" [0-9a-fA-F]{4})
+  )* "\"" ws
+
+number ::= ("-"? ([0-9] | [1-9] [0-9]{0,15})) ("." [0-9]+)? ([eE] [-+]? [0-9] [1-9]{0,15})? ws
+
+ws ::= | " " | "\n" [ \t]{0,20}
+)gbnf";
+
+// A grammar (JSON mode) first, so later steps only see allowed tokens; then llama.cpp's
+// default order: penalties → top-k → top-p → min-p → temperature → random draw (or
+// greedy when temperature is 0).
+SamplerPtr make_sampler(const GenerationParams& params, const llama_vocab* vocab) {
+    const SamplingParams& s = params.sampling;
+    const std::int32_t n_vocab = llama_vocab_n_tokens(vocab);
     SamplerPtr chain(llama_sampler_chain_init(llama_sampler_chain_default_params()));
     if (!chain) {
         throw std::runtime_error("failed to create sampler");
     }
     llama_sampler* c = chain.get();
+    if (params.json_object) {
+        llama_sampler* grammar = llama_sampler_init_grammar(vocab, kJsonGrammar, "root");
+        if (grammar == nullptr) {
+            throw std::runtime_error("failed to create the JSON grammar sampler");
+        }
+        llama_sampler_chain_add(c, grammar);
+    }
     if (s.repeat_penalty != 1.0f || s.frequency_penalty != 0.0f || s.presence_penalty != 0.0f) {
         llama_sampler_chain_add(
             c, llama_sampler_init_penalties(n_vocab, kPenaltyLastN, s.repeat_penalty,
@@ -95,6 +167,49 @@ std::vector<std::string> builtin_chat_templates() {
 
 }  // namespace
 
+// A llama_batch with room for `capacity` tokens of one sequence each, reused every step.
+class InferenceEngine::Batch {
+public:
+    explicit Batch(std::int32_t capacity) : batch_(llama_batch_init(capacity, 0, 1)) {}
+    ~Batch() { llama_batch_free(batch_); }
+    Batch(const Batch&) = delete;
+    Batch& operator=(const Batch&) = delete;
+    Batch(Batch&&) = delete;
+    Batch& operator=(Batch&&) = delete;
+
+    [[nodiscard]] llama_batch& get() noexcept { return batch_; }
+
+private:
+    llama_batch batch_;
+};
+
+// One generation request.
+struct InferenceEngine::Job {
+    RequestId id = 0;
+    std::vector<Token> prompt;
+    GenerationParams params;
+    Callbacks callbacks;
+    std::atomic<bool> cancelled{false};
+};
+
+// One sequence of the batch. Its KV cache keeps the tokens in `cache` (positions
+// 0..cache.size()-1) after a request ends, for prefix reuse by the next one.
+struct InferenceEngine::Slot {
+    llama_seq_id seq = 0;
+    std::shared_ptr<Job> job;  // null when free
+    std::vector<Token> cache;  // tokens evaluated into this sequence's KV cache
+    std::size_t prefill = 0;   // next prompt token to evaluate
+    Token next = 0;            // sampled token to evaluate in the next step
+    std::int32_t output = -1;  // batch index whose logits this slot samples from
+    SamplerPtr sampler;
+    Utf8Assembler utf8;
+    StopMatcher stop{std::vector<std::string>{}};
+    GenerationResult result;
+    std::uint64_t last_used = 0;
+
+    [[nodiscard]] bool prefilling() const { return job && prefill < job->prompt.size(); }
+};
+
 void InferenceEngine::ModelDeleter::operator()(llama_model* model) const noexcept {
     llama_model_free(model);
 }
@@ -121,17 +236,32 @@ InferenceEngine::InferenceEngine(const Config& cfg) {
         n_ctx = std::min(n_ctx, static_cast<std::uint32_t>(n_ctx_train));
     }
 
+    const auto slot_count = static_cast<std::uint32_t>(std::max(1, cfg.parallel_slots));
     llama_context_params ctx_params = llama_context_default_params();
-    ctx_params.n_ctx = n_ctx;
-    ctx_params.n_batch = n_ctx;  // the whole prompt is evaluated in one llama_decode call
+    // Every slot gets a full max_context of KV cache, so an admitted request always fits.
+    // llama.cpp rounds each sequence's share up to a multiple of 256; doing it here keeps
+    // the total divisible by the slot count.
+    const std::uint32_t slot_cells =
+        (n_ctx + kKvCellAlignment - 1) / kKvCellAlignment * kKvCellAlignment;
+    ctx_params.n_ctx = slot_cells * slot_count;
+    ctx_params.n_seq_max = slot_count;
+    ctx_params.kv_unified = false;  // separate per-slot caches: faster without shared prompts
+    n_batch_ = std::max(kBatchTokens, slot_count);
+    ctx_params.n_batch = n_batch_;
+    ctx_params.n_ubatch = n_batch_;
     const int threads = cfg.n_threads > 0 ? cfg.n_threads : available_cpus();
     ctx_params.n_threads = threads;
     ctx_params.n_threads_batch = threads;
+    ctx_params.flash_attn_type = flash_attn_type(cfg.flash_attention);
+    ctx_params.type_k = kv_type(cfg.kv_cache_type);
+    ctx_params.type_v = kv_type(cfg.kv_cache_type);
     ctx_params.no_perf = true;
 
     ctx_.reset(llama_init_from_model(model_.get(), ctx_params));
     if (!ctx_) {
-        throw std::runtime_error("failed to create inference context");
+        throw std::runtime_error(
+            "failed to create inference context (if memory ran out, lower parallel_slots or "
+            "max_context, or use kv_cache_type q8_0)");
     }
 
     std::string description(256, '\0');
@@ -142,14 +272,34 @@ InferenceEngine::InferenceEngine(const Config& cfg) {
     info_.n_layer = llama_model_n_layer(model_.get());
     info_.n_ctx_train = n_ctx_train;
     // llama.cpp may pad the allocation; requests are still limited to what was configured.
-    info_.n_ctx = std::min(n_ctx, llama_n_ctx(ctx_.get()));
+    info_.n_ctx = std::min(n_ctx, llama_n_ctx_seq(ctx_.get()));
     info_.n_params = llama_model_n_params(model_.get());
+    // Recurrent and sliding-window caches can't be trimmed to an arbitrary prefix after
+    // a copy, so they only reuse a slot's own cache.
+    can_copy_sequences_ = !llama_model_is_recurrent(model_.get()) &&
+                          !llama_model_is_hybrid(model_.get()) &&
+                          llama_model_n_swa(model_.get()) == 0;
     info_.gpu_offload = llama_supports_gpu_offload() && model_params.n_gpu_layers != 0;
 
     select_chat_template(cfg.chat_template);
+
+    batch_ = std::make_unique<Batch>(static_cast<std::int32_t>(n_batch_));
+    for (std::uint32_t i = 0; i < slot_count; ++i) {
+        auto slot = std::make_unique<Slot>();
+        slot->seq = static_cast<llama_seq_id>(i);
+        slots_.push_back(std::move(slot));
+    }
+    scheduler_ = std::thread([this] { run_scheduler(); });
 }
 
-InferenceEngine::~InferenceEngine() = default;
+InferenceEngine::~InferenceEngine() {
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        stopping_ = true;
+    }
+    wake_.notify_all();
+    scheduler_.join();
+}
 
 void InferenceEngine::select_chat_template(const std::string& configured) {
     const std::vector<ChatMessage> probe = {{"system", "s"}, {"user", "u"}};
@@ -286,9 +436,8 @@ std::string InferenceEngine::token_to_piece(Token token) const {
     return piece;
 }
 
-GenerationResult InferenceEngine::generate(const std::vector<Token>& prompt_tokens,
-                                           const GenerationParams& params,
-                                           const PieceCallback& on_piece) {
+InferenceEngine::RequestId InferenceEngine::submit(std::vector<Token> prompt_tokens,
+                                                   GenerationParams params, Callbacks callbacks) {
     if (prompt_tokens.empty() || params.max_tokens < 1) {
         throw RequestError("empty prompt or max_tokens < 1", "max_tokens");
     }
@@ -298,61 +447,366 @@ GenerationResult InferenceEngine::generate(const std::vector<Token>& prompt_toke
                                std::to_string(info_.n_ctx) + " tokens",
                            "max_tokens");
     }
-
-    const std::lock_guard<std::mutex> lock(mutex_);
-    llama_context* ctx = ctx_.get();
-    llama_memory_clear(llama_get_memory(ctx), true);
-    const SamplerPtr sampler = make_sampler(params.sampling, llama_vocab_n_tokens(vocab_));
-
-    GenerationResult result;
-    result.prompt_tokens = prompt_tokens.size();
-
-    // llama_batch takes a non-const pointer; it does not modify the tokens.
-    std::vector<Token> prompt = prompt_tokens;
-    if (llama_decode(ctx, llama_batch_get_one(prompt.data(),
-                                              static_cast<std::int32_t>(prompt.size()))) != 0) {
-        throw std::runtime_error("prompt evaluation failed");
+    auto job = std::make_shared<Job>();
+    job->prompt = std::move(prompt_tokens);
+    job->params = std::move(params);
+    job->callbacks = std::move(callbacks);
+    RequestId id = 0;
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        if (stopping_) {
+            throw std::runtime_error("the inference engine is shutting down");
+        }
+        id = next_id_++;
+        job->id = id;
+        jobs_.emplace(id, job);
+        pending_.push_back(std::move(job));
     }
+    wake_.notify_all();
+    return id;
+}
 
-    Utf8Assembler utf8;
-    StopMatcher stop(params.stop);
-    for (int step = 0; step < params.max_tokens; ++step) {
-        Token token = llama_sampler_sample(sampler.get(), ctx, -1);
-        if (llama_vocab_is_eog(vocab_, token)) {
-            result.reason = StopReason::eos;
+void InferenceEngine::cancel(RequestId id) {
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        const auto it = jobs_.find(id);
+        if (it == jobs_.end()) {
+            return;
+        }
+        it->second->cancelled = true;
+    }
+    wake_.notify_all();
+}
+
+GenerationResult InferenceEngine::generate(const std::vector<Token>& prompt_tokens,
+                                           const GenerationParams& params,
+                                           const PieceCallback& on_piece) {
+    // The scheduler hands pieces over through this queue; `on_piece` runs here, so a slow
+    // consumer never holds up the other requests in the batch.
+    struct Pipe {
+        std::mutex mutex;
+        std::condition_variable changed;
+        std::deque<std::string> pieces;
+        bool done = false;
+        bool abandoned = false;  // the consumer stopped reading
+        GenerationResult result;
+        std::exception_ptr error;
+    };
+    auto pipe = std::make_shared<Pipe>();
+    Callbacks callbacks;
+    callbacks.on_piece = [pipe](std::string_view piece) {
+        {
+            const std::lock_guard<std::mutex> lock(pipe->mutex);
+            if (pipe->abandoned) {
+                return false;
+            }
+            pipe->pieces.emplace_back(piece);
+        }
+        pipe->changed.notify_one();
+        return true;
+    };
+    callbacks.on_done = [pipe](const GenerationResult& result) {
+        {
+            const std::lock_guard<std::mutex> lock(pipe->mutex);
+            pipe->result = result;
+            pipe->done = true;
+        }
+        pipe->changed.notify_one();
+    };
+    callbacks.on_error = [pipe](std::exception_ptr error) {
+        {
+            const std::lock_guard<std::mutex> lock(pipe->mutex);
+            pipe->error = std::move(error);
+            pipe->done = true;
+        }
+        pipe->changed.notify_one();
+    };
+    const RequestId id = submit(prompt_tokens, params, std::move(callbacks));
+
+    std::unique_lock<std::mutex> lock(pipe->mutex);
+    while (true) {
+        pipe->changed.wait(lock, [&] { return pipe->done || !pipe->pieces.empty(); });
+        while (!pipe->pieces.empty()) {
+            const std::string piece = std::move(pipe->pieces.front());
+            pipe->pieces.pop_front();
+            if (pipe->abandoned) {
+                continue;
+            }
+            lock.unlock();
+            bool keep_going = false;
+            try {
+                keep_going = on_piece(piece);
+            } catch (...) {
+                cancel(id);
+                throw;
+            }
+            lock.lock();
+            if (!keep_going) {
+                pipe->abandoned = true;
+                lock.unlock();
+                cancel(id);
+                lock.lock();
+            }
+        }
+        if (pipe->done) {
             break;
         }
-        ++result.completion_tokens;
-
-        const std::string text = stop.push(utf8.push(token_to_piece(token)));
-        if (!text.empty() && !on_piece(text)) {
-            result.reason = StopReason::cancelled;
-            return result;
-        }
-        if (stop.stopped()) {
-            result.reason = StopReason::stop_sequence;
-            return result;
-        }
-
-        if (step + 1 == params.max_tokens) {
-            break;  // no need to evaluate a token whose successor we won't sample
-        }
-        if (llama_decode(ctx, llama_batch_get_one(&token, 1)) != 0) {
-            throw std::runtime_error("token evaluation failed");
-        }
     }
-
-    // Generation ended (EOS or length): release anything held back for UTF-8 or stops.
-    std::string tail = stop.push(utf8.flush());
-    if (stop.stopped()) {
-        result.reason = StopReason::stop_sequence;
-    } else {
-        tail += stop.flush();
+    if (pipe->error) {
+        std::rethrow_exception(pipe->error);
     }
-    if (!tail.empty()) {
-        on_piece(tail);
+    GenerationResult result = pipe->result;
+    if (pipe->abandoned) {
+        result.reason = StopReason::cancelled;
     }
     return result;
+}
+
+void InferenceEngine::run_scheduler() {
+    std::unique_lock<std::mutex> lock(mutex_);
+    while (true) {
+        const auto busy = [this] {
+            return std::any_of(slots_.begin(), slots_.end(),
+                               [](const auto& slot) { return slot->job != nullptr; });
+        };
+        wake_.wait(lock, [&] { return stopping_ || !pending_.empty() || busy(); });
+        if (stopping_) {
+            break;
+        }
+        const std::vector<std::shared_ptr<Job>> cancelled = admit_pending_locked();
+        lock.unlock();
+        for (const auto& job : cancelled) {
+            GenerationResult result;
+            result.prompt_tokens = job->prompt.size();
+            result.reason = StopReason::cancelled;
+            job->callbacks.on_done(result);
+        }
+        try {
+            step();
+        } catch (...) {
+            fail_active(std::current_exception());
+        }
+        lock.lock();
+    }
+
+    // Shutting down: nothing will run any more.
+    std::vector<std::shared_ptr<Job>> left(pending_.begin(), pending_.end());
+    pending_.clear();
+    jobs_.clear();
+    lock.unlock();
+    for (const auto& slot : slots_) {
+        if (slot->job) {
+            left.push_back(std::move(slot->job));
+        }
+    }
+    const auto error =
+        std::make_exception_ptr(std::runtime_error("the inference engine is shutting down"));
+    for (const auto& job : left) {
+        job->callbacks.on_error(error);
+    }
+}
+
+std::vector<std::shared_ptr<InferenceEngine::Job>> InferenceEngine::admit_pending_locked() {
+    std::vector<std::shared_ptr<Job>> cancelled;
+    while (!pending_.empty()) {
+        std::shared_ptr<Job>& job = pending_.front();
+        if (job->cancelled) {  // cancelled while waiting: finish without running
+            jobs_.erase(job->id);
+            cancelled.push_back(std::move(job));
+            pending_.pop_front();
+            continue;
+        }
+        // The free slot whose cache shares the longest prefix with the prompt; among
+        // equals the least recently used, so recent caches survive longer.
+        Slot* best = nullptr;
+        std::size_t best_prefix = 0;
+        for (const auto& slot : slots_) {
+            if (slot->job) {
+                continue;
+            }
+            const std::size_t prefix = common_prefix(slot->cache, job->prompt);
+            if (best == nullptr || prefix > best_prefix ||
+                (prefix == best_prefix && slot->last_used < best->last_used)) {
+                best = slot.get();
+                best_prefix = prefix;
+            }
+        }
+        if (best == nullptr) {
+            break;  // all slots busy
+        }
+        std::shared_ptr<Job> next = std::move(job);
+        pending_.pop_front();
+        start_job(*best, std::move(next));
+    }
+    return cancelled;
+}
+
+void InferenceEngine::start_job(Slot& slot, std::shared_ptr<Job> job) {
+    llama_memory_t memory = llama_get_memory(ctx_.get());
+    std::size_t own = common_prefix(slot.cache, job->prompt);
+
+    // Another slot (busy or not) may hold much more of this prompt, e.g. a system prompt
+    // shared by concurrent requests. Copying its cache beats evaluating the tokens again.
+    const Slot* donor = nullptr;
+    std::size_t donor_prefix = 0;
+    for (const auto& other : slots_) {
+        if (other.get() == &slot) {
+            continue;
+        }
+        const std::size_t prefix = common_prefix(other->cache, job->prompt);
+        if (prefix > donor_prefix) {
+            donor = other.get();
+            donor_prefix = prefix;
+        }
+    }
+    if (donor != nullptr && can_copy_sequences_ && donor_prefix >= own + kMinCopiedTokens) {
+        // Separate per-slot caches can only be copied whole; the extra part is trimmed
+        // below. The data itself moves at the start of the next llama_decode.
+        llama_memory_seq_cp(memory, donor->seq, slot.seq, -1, -1);
+        slot.cache = donor->cache;
+        own = donor_prefix;
+    }
+
+    // Keep the shared prefix; at least the last prompt token is evaluated again, because
+    // its logits are needed to sample the first new token.
+    std::size_t reuse = std::min(own, job->prompt.size() - 1);
+    if (!llama_memory_seq_rm(memory, slot.seq, static_cast<llama_pos>(reuse), -1)) {
+        // Some caches (e.g. recurrent models) cannot drop a suffix: start over.
+        llama_memory_seq_rm(memory, slot.seq, -1, -1);
+        reuse = 0;
+    }
+    slot.cache.resize(reuse);
+    slot.prefill = reuse;
+    slot.output = -1;
+    slot.sampler = make_sampler(job->params, vocab_);
+    slot.utf8 = Utf8Assembler();
+    slot.stop = StopMatcher(job->params.stop);
+    slot.result = GenerationResult();
+    slot.result.prompt_tokens = job->prompt.size();
+    slot.result.cached_tokens = reuse;
+    slot.job = std::move(job);
+}
+
+void InferenceEngine::step() {
+    // Finish cancelled requests first so they don't use the batch.
+    for (const auto& slot : slots_) {
+        if (slot->job && slot->job->cancelled) {
+            finish(*slot, StopReason::cancelled, /*flush=*/false);
+        }
+    }
+
+    llama_batch& batch = batch_->get();
+    batch.n_tokens = 0;
+    const auto add = [&](Slot& slot, Token token, bool wants_logits) {
+        const std::int32_t i = batch.n_tokens++;
+        batch.token[i] = token;
+        batch.pos[i] = static_cast<llama_pos>(slot.cache.size());
+        batch.n_seq_id[i] = 1;
+        batch.seq_id[i][0] = slot.seq;
+        batch.logits[i] = wants_logits ? 1 : 0;
+        slot.cache.push_back(token);
+        if (wants_logits) {
+            slot.output = i;
+        }
+    };
+
+    // One token for every generating request...
+    for (const auto& slot : slots_) {
+        slot->output = -1;
+        if (slot->job && !slot->prefilling()) {
+            add(*slot, slot->next, true);
+        }
+    }
+    // ...then prompt chunks with the remaining room, oldest request first.
+    for (const auto& slot : slots_) {
+        if (!slot->job || !slot->prefilling()) {
+            continue;
+        }
+        const std::vector<Token>& prompt = slot->job->prompt;
+        while (slot->prefill < prompt.size() &&
+               static_cast<std::uint32_t>(batch.n_tokens) < n_batch_) {
+            const bool last = slot->prefill + 1 == prompt.size();
+            add(*slot, prompt[slot->prefill], last);
+            ++slot->prefill;
+        }
+    }
+    if (batch.n_tokens == 0) {
+        return;
+    }
+
+    if (llama_decode(ctx_.get(), batch) != 0) {
+        throw std::runtime_error("token evaluation failed");
+    }
+    for (const auto& slot : slots_) {
+        if (slot->job && slot->output >= 0) {
+            accept_token(*slot, slot->output);
+        }
+    }
+}
+
+void InferenceEngine::accept_token(Slot& slot, std::int32_t batch_index) {
+    const Token token = llama_sampler_sample(slot.sampler.get(), ctx_.get(), batch_index);
+    if (llama_vocab_is_eog(vocab_, token)) {
+        finish(slot, StopReason::eos, /*flush=*/true);
+        return;
+    }
+    ++slot.result.completion_tokens;
+    const std::string text = slot.stop.push(slot.utf8.push(token_to_piece(token)));
+    if (!text.empty() && !slot.job->callbacks.on_piece(text)) {
+        finish(slot, StopReason::cancelled, /*flush=*/false);
+        return;
+    }
+    if (slot.stop.stopped()) {
+        finish(slot, StopReason::stop_sequence, /*flush=*/false);
+        return;
+    }
+    if (slot.result.completion_tokens >= static_cast<std::size_t>(slot.job->params.max_tokens)) {
+        // No need to evaluate a token whose successor won't be sampled.
+        finish(slot, StopReason::length, /*flush=*/true);
+        return;
+    }
+    slot.next = token;
+}
+
+void InferenceEngine::finish(Slot& slot, StopReason reason, bool flush) {
+    const std::shared_ptr<Job> job = std::move(slot.job);
+    slot.result.reason = reason;
+    if (flush) {
+        // Release anything held back for UTF-8 completion or a possible stop sequence.
+        std::string tail = slot.stop.push(slot.utf8.flush());
+        if (slot.stop.stopped()) {
+            slot.result.reason = StopReason::stop_sequence;
+        } else {
+            tail += slot.stop.flush();
+        }
+        if (!tail.empty()) {
+            (void)job->callbacks.on_piece(tail);
+        }
+    }
+    slot.sampler.reset();
+    slot.last_used = ++use_counter_;
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        jobs_.erase(job->id);
+    }
+    job->callbacks.on_done(slot.result);
+}
+
+void InferenceEngine::fail_active(const std::exception_ptr& error) {
+    llama_memory_t memory = llama_get_memory(ctx_.get());
+    for (const auto& slot : slots_) {
+        if (!slot->job) {
+            continue;
+        }
+        const std::shared_ptr<Job> job = std::move(slot->job);
+        llama_memory_seq_rm(memory, slot->seq, -1, -1);
+        slot->cache.clear();
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            jobs_.erase(job->id);
+        }
+        job->callbacks.on_error(error);
+    }
 }
 
 void InferenceEngine::warm_up() {

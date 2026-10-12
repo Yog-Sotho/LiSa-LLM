@@ -6,17 +6,19 @@
 
 #include <exception>
 
-// JSON encoding of the broker <-> worker messages.
+// JSON encoding of the broker <-> worker messages. After init, every message carries the
+// "id" of its request, so requests are multiplexed and generations run concurrently.
 //
 //   broker -> worker: {"op":"init","settings":{...}}            once, before the sandbox
-//                     {"op":"tokenize","text":"..."}
-//                     {"op":"tokenize_chat","messages":[...]}
-//                     {"op":"generate","tokens":[...],"params":{...}}
-//                     {"op":"cancel"}                              while generating
-//                     {"op":"probe","name":"..."}                  test builds only
+//                     {"op":"tokenize","id":N,"text":"..."}
+//                     {"op":"tokenize_chat","id":N,"messages":[...]}
+//                     {"op":"generate","id":N,"tokens":[...],"params":{...}}
+//                     {"op":"cancel","id":N}                       stop generation N
+//                     {"op":"probe","id":N,"name":"..."}           test builds only
 //   worker -> broker: {"ready":{model info}} | {"fatal":"..."}     reply to init
-//                     {"tokens":[...]} | {"piece":"..."}* {"done":{result}}
-//                     {"error":{"kind":"request"|"internal","message":"...","param":"..."}}
+//                     {"id":N,"tokens":[...]}
+//                     {"id":N,"piece":"..."}* then {"id":N,"done":{result}}
+//                     {"id":N,"error":{"kind":"request"|"internal","message":"...",...}}
 namespace lisa {
 
 void to_json(json& j, const SamplingParams& s);
@@ -35,6 +37,9 @@ struct WorkerSettings {
     std::string chat_template;
     int n_threads = 4;
     std::uint32_t max_context = 2048;
+    int parallel_slots = 1;
+    std::string flash_attention = "auto";
+    std::string kv_cache_type = "f16";
     std::uint64_t memory_limit_bytes = 0;
     std::string cgroup;  // delegated cgroup v2 parent directory, or empty
     bool seccomp_log = false;

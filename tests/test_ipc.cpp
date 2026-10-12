@@ -82,10 +82,11 @@ TEST_CASE("protocol: values survive serialisation", "[ipc]") {
     CHECK(back.sampling.seed == 99U);
     CHECK(back.stream);
 
-    const lisa::GenerationResult result{5, 3, lisa::StopReason::stop_sequence};
+    const lisa::GenerationResult result{5, 2, 3, lisa::StopReason::stop_sequence};
     const auto r = lisa::json(result).get<lisa::GenerationResult>();
     CHECK(r.reason == lisa::StopReason::stop_sequence);
     CHECK(r.completion_tokens == 3);
+    CHECK(r.cached_tokens == 2);
 
     lisa::Config cfg;
     cfg.api_key = "secret";
