@@ -197,7 +197,12 @@ TEST_CASE("HTTP: streamed completion matches the non-streamed text", "[server]")
     CHECK_FALSE(final_chunk["choices"][0]["finish_reason"].is_null());
     const auto& usage_chunk = events.back();
     CHECK(usage_chunk["choices"].empty());
-    CHECK(usage_chunk["usage"] == whole["usage"]);
+    for (const char* field : {"prompt_tokens", "completion_tokens", "total_tokens"}) {
+        CHECK(usage_chunk["usage"][field] == whole["usage"][field]);
+    }
+    // The same prompt again: all but its last token come from the prompt cache.
+    CHECK(usage_chunk["usage"]["prompt_tokens_details"]["cached_tokens"] ==
+          whole["usage"]["prompt_tokens"].get<int>() - 1);
     CHECK(text == whole["choices"][0]["text"].get<std::string>());
 }
 
@@ -254,4 +259,26 @@ TEST_CASE("HTTP: request validation errors", "[server]") {
     // Without max_tokens the configured default (500) is clamped to the free context.
     const auto ok = post_json(client, "/v1/completions", {{"prompt", long_prompt}}, 200);
     CHECK(ok["usage"]["total_tokens"].get<int>() <= 128);
+}
+
+TEST_CASE("HTTP: response_format json_object", "[server]") {
+    REQUIRE_SERVER(server);
+    auto client = server->client();
+    const auto body = post_json(client, "/v1/chat/completions",
+                                {{"messages", {{{"role", "user"}, {"content", "Reply in JSON."}}}},
+                                 {"max_tokens", 40},
+                                 {"temperature", 0},
+                                 {"response_format", {{"type", "json_object"}}}},
+                                200);
+    const std::string content = body["choices"][0]["message"]["content"];
+    INFO(content);
+    REQUIRE_FALSE(content.empty());
+    CHECK(content.front() == '{');
+    if (body["choices"][0]["finish_reason"] == "stop") {
+        CHECK_NOTHROW(lisa::json::parse(content));
+    }
+    post_json(client, "/v1/chat/completions",
+              {{"messages", {{{"role", "user"}, {"content", "x"}}}},
+               {"response_format", {{"type", "json_schema"}}}},
+              400);
 }

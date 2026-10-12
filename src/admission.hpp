@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -14,14 +15,16 @@
 
 namespace lisa {
 
-// First-come, first-served access to the model, with a bounded line. The engine runs one
-// request at a time; requests beyond `max_waiting` are refused (HTTP 429) instead of
-// piling up threads and connections.
+// First-come, first-served access to the model, with a bounded line. Up to `max_running`
+// requests use the model at once (the engine's batch slots); up to `max_waiting` more
+// wait in arrival order, and further ones are refused (HTTP 429) instead of piling up
+// threads and connections.
 class AdmissionQueue {
 public:
     using Clock = std::chrono::steady_clock;
 
-    explicit AdmissionQueue(std::size_t max_waiting) : max_waiting_(max_waiting) {}
+    AdmissionQueue(std::size_t max_running, std::size_t max_waiting)
+        : max_running_(std::max<std::size_t>(1, max_running)), max_waiting_(max_waiting) {}
 
     // A place in line. Destroying it leaves the line (or hands the model to the next).
     class Slot {
@@ -69,22 +72,19 @@ public:
     void close();
 
     [[nodiscard]] std::size_t waiting() const;
-    [[nodiscard]] bool busy() const;
+    [[nodiscard]] std::size_t running() const;
 
     // Blocks until nothing is running or waiting, or `deadline` passes. Returns true if idle.
     [[nodiscard]] bool wait_idle(Clock::time_point deadline);
 
 private:
-    void advance_locked();  // the running slot finished: serve the next live ticket
-
+    const std::size_t max_running_;
     const std::size_t max_waiting_;
     mutable std::mutex mutex_;
     std::condition_variable changed_;
     std::uint64_t next_ticket_ = 0;
-    std::uint64_t serving_ = 0;          // ticket allowed to run
-    std::set<std::uint64_t> abandoned_;  // tickets that left before their turn
-    std::size_t waiting_ = 0;
-    bool running_ = false;
+    std::set<std::uint64_t> waiting_;  // tickets in line, oldest first
+    std::size_t running_ = 0;
     bool closed_ = false;
     double average_service_seconds_ = 1.0;  // exponential moving average
 };

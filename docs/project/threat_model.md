@@ -23,7 +23,9 @@ The second attacker is a **network client** sending hostile prompts or requests:
 
 The third case is a **compromised worker**, the expected result of a successful model
 exploit. The broker treats everything the worker sends as untrusted:
-- **Framing:** frames are size-checked (16 MiB) and parsed as JSON.
+- **Framing:** frames are size-checked (16 MiB) and parsed as JSON. Requests are
+  multiplexed: every reply must carry the id of a request the broker sent, or the worker
+  is killed.
 - **Wrong shapes:** a message of the wrong shape counts as a protocol violation. The worker
   is killed and restarted rather than letting the channel fall out of step.
 - **Testing:** this decoder is fuzzed too, and a test runs a deliberately hostile worker.

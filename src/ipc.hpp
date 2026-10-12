@@ -50,6 +50,9 @@ public:
     [[nodiscard]] bool is_open() const noexcept { return fd_ >= 0; }
     [[nodiscard]] int fd() const noexcept { return fd_; }
     void close() noexcept;
+    // Wakes a thread blocked in receive() (it sees EOF) without closing the descriptor
+    // under it. Safe to call from another thread.
+    void shutdown() const noexcept;
 
 private:
     int fd_ = -1;

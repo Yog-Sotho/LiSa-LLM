@@ -11,6 +11,72 @@
 
 ## Progress log
 
+### 2026-10-12 — P4 complete (performance)
+
+Done:
+- **Continuous batching:** `InferenceEngine` now has a scheduler thread and
+  `parallel_slots` sequences (default 4).
+  - Each step evaluates one `llama_batch`: the next token of every generating request,
+    plus chunks of newly admitted prompts (512 tokens per step). Long prompts never stall
+    running streams.
+  - Each slot has its own KV cache of `max_context` cells (non-unified), so an admitted
+    request always fits.
+  - Every request has its own sampler, UTF-8 assembler and stop matcher.
+  - An async `submit()`/`cancel()` API sits under the blocking `generate()`. Callbacks
+    never run under the engine lock (a latent deadlock was found and fixed while writing
+    the worker side).
+- **Prompt cache:**
+  - **Own slot:** a request takes the free slot whose cache shares the longest prefix with
+    its prompt and only evaluates the rest.
+  - **Copy from another slot:** when another slot, busy or not, holds at least 32 more
+    tokens of the prompt, its cache is copied in. Separate per-slot caches can only be
+    copied whole, so the copy is trimmed afterwards. Recurrent, hybrid and sliding-window
+    models skip this.
+  - **Reporting:** reuse appears as OpenAI's `usage.prompt_tokens_details.cached_tokens`
+    and as `lisa_prompt_cached_tokens_total`.
+- **Sandbox protocol multiplexed:** every message carries a request id.
+  - The worker runs generations concurrently through the async engine API.
+  - The broker has a reader thread per worker that routes replies into per-request
+    mailboxes.
+  - Worker death (crash, seccomp kill, or protocol violation, now including a reply with no
+    or an unknown id) closes every mailbox with the exit status.
+  - TSan found a race: the reader closed the socket while the destructor called `shutdown()`
+    on it, which could hit a reused descriptor number. The descriptor now closes only when
+    the worker object is destroyed.
+- **Admission:** the HTTP queue lets `parallel_slots` requests run at once, still first
+  come, first served, and the thread pool grows accordingly.
+- **Options:** `flash_attention` (auto/on/off) and `kv_cache_type` (f16/q8_0/q4_0).
+- **JSON mode:** `response_format: {"type": "json_object"}` puts a grammar sampler
+  (llama.cpp's `json.gbnf`) at the head of the chain. `json_schema` is still rejected,
+  because schema-to-grammar conversion lives in llama.cpp's `common/`.
+- **Benchmarks:** `bench/bench.py` (standard library only) against `llama-server` built from
+  the same llama.cpp commit, on 4 vCPUs with Qwen2.5-0.5B Q4_K_M, with distinct prompts and
+  LiSa sandboxed (numbers in the README).
+  - **Throughput:** at concurrency 8, LiSa does 66.7 tok/s, `llama-server` 59.2 (P3: 37).
+    At concurrency 4, 61.9 against 47.2.
+  - **Shared prompt:** at concurrency 8, 90.4 against 82.8 tok/s.
+  - **Single request:** parity, so the sandbox has no measurable cost.
+  - **Benchmark bug:** my first baseline understated LiSa. The harness reused prompts across
+    concurrency levels, which `llama-server` answered from its prompt cache. The numbering
+    is now global.
+- **Tests:** 113. New ones cover:
+  - concurrent requests giving the same output as alone (in process and through the
+    sandbox, with more requests than slots);
+  - prefix reuse and cross-slot copy (mutation-checked);
+  - cancelling one request without affecting the others;
+  - async cancel before start, N-runner admission, JSON mode (engine and HTTP), and
+    cached-token reporting.
+
+  TSan is clean on the full suite and on 8 stress runs of the concurrency tests.
+
+Not done from the plan: speculative decoding and multi-GPU split (the options exist in
+libllama but need a draft model and multi-GPU hardware to test).
+
+Estimated scores after P4 (self-assessed): Build 9, Security 8.5, Concurrency 8.5,
+Principles 8.5, Dependencies 8.5, Observability 8.5, Lifecycle 8, Quality 8.5, Dead code 9 →
+**health ≈ 8.6/10, SOTA ≈ 8/10**. P5 (releases, SBOM and signatures, a coverage gate,
+SECURITY.md and CONTRIBUTING.md) remains.
+
 ### 2026-10-12 — P3 complete (hardened API)
 
 Done:

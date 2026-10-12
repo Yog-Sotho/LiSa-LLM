@@ -19,9 +19,11 @@ bool AdmissionQueue::Slot::wait(const std::function<bool()>& give_up) {
     if (queue_ == nullptr || state_ != State::waiting) {
         return state_ == State::running;
     }
-    std::unique_lock<std::mutex> lock(queue_->mutex_);
-    while (queue_->serving_ != ticket_ || queue_->running_) {
-        if (queue_->closed_) {
+    AdmissionQueue& q = *queue_;
+    std::unique_lock<std::mutex> lock(q.mutex_);
+    // Runs when it is the oldest ticket in line and a slot is free.
+    while (*q.waiting_.begin() != ticket_ || q.running_ >= q.max_running_) {
+        if (q.closed_) {
             return false;
         }
         lock.unlock();
@@ -30,17 +32,19 @@ bool AdmissionQueue::Slot::wait(const std::function<bool()>& give_up) {
         if (stop) {
             return false;
         }
-        queue_->changed_.wait_for(lock, kPollInterval);
+        q.changed_.wait_for(lock, kPollInterval);
     }
-    if (queue_->closed_) {
+    if (q.closed_) {
         return false;
     }
-    queue_->running_ = true;
-    --queue_->waiting_;
+    q.waiting_.erase(ticket_);
+    ++q.running_;
     state_ = State::running;
     const Clock::time_point now = Clock::now();
     waited_ = now - started_;
     started_ = now;
+    lock.unlock();
+    q.changed_.notify_all();  // the next ticket may run too if another slot is free
     return true;
 }
 
@@ -54,42 +58,35 @@ void AdmissionQueue::Slot::leave() noexcept {
             const double seconds = std::chrono::duration<double>(Clock::now() - started_).count();
             queue_->average_service_seconds_ +=
                 kServiceTimeWeight * (seconds - queue_->average_service_seconds_);
-            queue_->running_ = false;
-            queue_->advance_locked();
+            --queue_->running_;
         } else {
-            --queue_->waiting_;
-            if (ticket_ == queue_->serving_) {
-                queue_->advance_locked();  // its turn had come: pass it on
-            } else {
-                queue_->abandoned_.insert(ticket_);
-            }
+            queue_->waiting_.erase(ticket_);
         }
     }
     state_ = State::left;
     queue_->changed_.notify_all();
 }
 
-void AdmissionQueue::advance_locked() {
-    ++serving_;
-    while (abandoned_.erase(serving_) > 0) {
-        ++serving_;
-    }
-}
-
 std::optional<AdmissionQueue::Slot> AdmissionQueue::try_join() {
     const std::lock_guard<std::mutex> lock(mutex_);
-    // One request runs; up to max_waiting_ wait behind it.
-    const std::size_t in_line = waiting_ + (running_ ? 1 : 0);
-    if (closed_ || in_line > max_waiting_) {
+    // Requests that can start at once don't count against the waiting limit.
+    const std::size_t free_slots = running_ < max_running_ ? max_running_ - running_ : 0;
+    const std::size_t in_line = waiting_.size() + 1;
+    const std::size_t would_wait = in_line > free_slots ? in_line - free_slots : 0;
+    if (closed_ || would_wait > max_waiting_) {
         return std::nullopt;
     }
-    ++waiting_;
-    return Slot(this, next_ticket_++, Clock::now());
+    const std::uint64_t ticket = next_ticket_++;
+    waiting_.insert(ticket);
+    return Slot(this, ticket, Clock::now());
 }
 
 int AdmissionQueue::retry_after_seconds() const {
     const std::lock_guard<std::mutex> lock(mutex_);
-    const double estimate = average_service_seconds_ * static_cast<double>(waiting_ + 1);
+    // Requests ahead, divided among the slots, times the average service time.
+    const double rounds =
+        static_cast<double>(waiting_.size() + 1) / static_cast<double>(max_running_);
+    const double estimate = average_service_seconds_ * std::max(1.0, rounds);
     return std::clamp(static_cast<int>(std::ceil(estimate)), 1, kMaxRetryAfterSeconds);
 }
 
@@ -103,17 +100,18 @@ void AdmissionQueue::close() {
 
 std::size_t AdmissionQueue::waiting() const {
     const std::lock_guard<std::mutex> lock(mutex_);
-    return waiting_;
+    return waiting_.size();
 }
 
-bool AdmissionQueue::busy() const {
+std::size_t AdmissionQueue::running() const {
     const std::lock_guard<std::mutex> lock(mutex_);
     return running_;
 }
 
 bool AdmissionQueue::wait_idle(Clock::time_point deadline) {
     std::unique_lock<std::mutex> lock(mutex_);
-    return changed_.wait_until(lock, deadline, [this] { return !running_ && waiting_ == 0; });
+    return changed_.wait_until(lock, deadline,
+                               [this] { return running_ == 0 && waiting_.empty(); });
 }
 
 RateLimiter::RateLimiter(int per_minute, int burst)

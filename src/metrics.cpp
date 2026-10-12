@@ -90,18 +90,19 @@ void Metrics::rejected(std::string_view reason) {
     ++rejected_[std::string(reason)];
 }
 
-void Metrics::generation_finished(std::size_t prompt_tokens, std::size_t completion_tokens,
-                                  double queue_seconds, double first_token_seconds,
-                                  double generation_seconds) {
+void Metrics::generation_finished(const GenerationResult& result, double queue_seconds,
+                                  double first_token_seconds, double generation_seconds) {
     const std::lock_guard<std::mutex> lock(mutex_);
-    prompt_tokens_ += prompt_tokens;
-    completion_tokens_ += completion_tokens;
+    prompt_tokens_ += result.prompt_tokens;
+    cached_tokens_ += result.cached_tokens;
+    completion_tokens_ += result.completion_tokens;
     ++generations_;
     queue_seconds_.observe(queue_seconds);
-    if (completion_tokens > 0) {
+    if (result.completion_tokens > 0) {
         first_token_seconds_.observe(first_token_seconds);
         if (generation_seconds > 0) {
-            tokens_per_second_.observe(static_cast<double>(completion_tokens) / generation_seconds);
+            tokens_per_second_.observe(static_cast<double>(result.completion_tokens) /
+                                       generation_seconds);
         }
     }
 }
@@ -114,7 +115,7 @@ std::string Metrics::render(const MetricsGauges& gauges) const {
     header(out, "lisa_ready", "gauge", "1 when the server accepts inference requests.");
     sample(out, "lisa_ready", {}, gauges.engine.ready && !gauges.draining ? 1 : 0);
     header(out, "lisa_requests_running", "gauge", "Requests using the model right now.");
-    sample(out, "lisa_requests_running", {}, gauges.busy ? 1 : 0);
+    sample(out, "lisa_requests_running", {}, static_cast<double>(gauges.running));
     header(out, "lisa_requests_queued", "gauge", "Requests waiting for the model.");
     sample(out, "lisa_requests_queued", {}, static_cast<double>(gauges.queued));
     header(out, "lisa_worker_deaths_total", "counter",
@@ -146,6 +147,9 @@ std::string Metrics::render(const MetricsGauges& gauges) const {
     sample(out, "lisa_generations_total", {}, static_cast<double>(generations_));
     header(out, "lisa_prompt_tokens_total", "counter", "Prompt tokens processed.");
     sample(out, "lisa_prompt_tokens_total", {}, static_cast<double>(prompt_tokens_));
+    header(out, "lisa_prompt_cached_tokens_total", "counter",
+           "Prompt tokens reused from the prompt cache instead of being evaluated.");
+    sample(out, "lisa_prompt_cached_tokens_total", {}, static_cast<double>(cached_tokens_));
     header(out, "lisa_completion_tokens_total", "counter", "Tokens generated.");
     sample(out, "lisa_completion_tokens_total", {}, static_cast<double>(completion_tokens_));
     header(out, "lisa_queue_wait_seconds", "histogram", "Time requests waited for the model.");

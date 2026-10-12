@@ -17,24 +17,34 @@
 ## Project status
 
 LiSa-LLM is being rebuilt following the [codebase audit](docs/project/codebase_audit.md).
-**Phases P0–P3 are done**: the project builds reproducibly, inference runs on
+**Phases P0–P4 are done**: the project builds reproducibly, inference runs on
 [llama.cpp](https://github.com/ggml-org/llama.cpp)'s `libllama`, the API is OpenAI-compatible
 with chat templates, the model runs in an isolated worker process, and the API is hardened
 for exposure (multiple hashed keys, rate limits, a bounded queue, timeouts, mTLS, Prometheus
 metrics, graceful shutdown). CI runs sanitizers, static analysis, end-to-end model and HTTP
 tests, escape attempts against a live worker, and libFuzzer on the request and IPC decoders.
-Next up: performance (P4, continuous batching).
+With continuous batching and a prompt cache it is faster than llama.cpp's own `llama-server`
+under concurrent load, sandbox included (see [Performance](#performance)). Next up: project
+hygiene (P5: releases, SBOM, coverage).
 
 ## Features
 
 - 🧠 **Any GGUF model llama.cpp supports** – LLaMA 2/3, Mistral, Qwen, Gemma, Phi and more,
   every quantisation type; the tokenizer is read from the GGUF file.
-- ⚡ **GPU offload** – CUDA build option with configurable layer count (`gpu_layers`).
+- 🚀 **Continuous batching** – up to `parallel_slots` requests generate together in one
+  batch; new prompts are evaluated alongside running streams, so nobody waits for a long
+  generation to finish.
+- ♻️ **Prompt cache** – a request reuses the longest matching prefix already in any slot
+  (a shared system prompt, the earlier turns of a chat) and only evaluates the rest;
+  reported as `usage.prompt_tokens_details.cached_tokens`.
+- ⚡ **GPU offload** – CUDA build option with configurable layer count (`gpu_layers`);
+  flash attention and quantised (`q8_0`/`q4_0`) KV cache options.
 - 🔌 **OpenAI-compatible API** – `/v1/chat/completions`, `/v1/completions`, `/v1/models`; works
   with the official OpenAI SDKs. Chat templates come from the GGUF file.
 - 📡 **Real-time streaming** via Server-Sent Events; generation stops when the client disconnects.
 - 🎛️ **Sampling** – temperature, top-p, top-k, min-p, presence/frequency/repeat penalties,
-  seed and stop sequences.
+  seed and stop sequences; JSON mode (`response_format: {"type": "json_object"}`) constrained
+  by a grammar, so the output is always JSON.
 - 🌐 **Ready for exposure** – TLS 1.2+/1.3 with forward-secret AEAD suites, optional mutual
   TLS, HSTS; multiple API keys stored as SHA-256 digests; per-key rate limits; a bounded
   first-come-first-served queue (429 + `Retry-After` when full); timeouts; strict request
@@ -200,11 +210,12 @@ curl http://localhost:8080/v1/chat/completions \
 **Supported request fields:** `messages` (roles `system`/`developer`, `user`, `assistant`;
 text content) or `prompt`; `max_tokens` / `max_completion_tokens`; `temperature` (0 = greedy);
 `top_p`; `presence_penalty`; `frequency_penalty`; `seed`; `stop` (up to 4 sequences);
-`stream` and `stream_options.include_usage`. llama.cpp extensions: `top_k`, `min_p`,
-`repeat_penalty`. Responses include `usage` and `finish_reason` (`stop` / `length`).
+`stream` and `stream_options.include_usage`; `response_format` `text` or `json_object`.
+llama.cpp extensions: `top_k`, `min_p`, `repeat_penalty`. Responses include `usage` (with
+`prompt_tokens_details.cached_tokens`) and `finish_reason` (`stop` / `length`).
 
-Features the server doesn't implement (`n` > 1, `logprobs`, `tools`, JSON `response_format`,
-`logit_bias`, `echo`, `suffix`) are rejected with `400` rather than silently ignored. Errors
+Features the server doesn't implement (`n` > 1, `logprobs`, `tools`, `json_schema`
+response formats, `logit_bias`, `echo`, `suffix`) are rejected with `400` rather than silently ignored. Errors
 use OpenAI's format: `{"error": {"message", "type", "param", "code"}}`. Without `max_tokens`,
 generation is limited by `max_new_tokens_default` and the free context.
 
@@ -227,6 +238,37 @@ docker run --rm -p 8080:8080 \
 The image runs as an unprivileged user and listens on `0.0.0.0` inside the container. It
 refuses to start with the placeholder `api_key`, so mount a config with a strong key. To run
 the sandbox in the container, see [Sandbox requirements](#sandbox-requirements).
+
+## Performance
+
+Throughput and time to first token (TTFT) at increasing concurrency, measured with
+[`bench/bench.py`](bench/bench.py) on the same machine and model for both servers:
+Qwen2.5-0.5B-Instruct Q4_K_M, 4 vCPUs (Xeon @ 2.8 GHz, AVX2), 4 threads, 64 tokens per
+request, 8 requests per level, every prompt distinct. LiSa runs **with the sandbox on**, 8
+slots; `llama-server` is built from the same llama.cpp commit with `-np 8`.
+
+| Concurrency | LiSa tok/s | llama-server tok/s | LiSa TTFT p95 | llama-server TTFT p95 |
+|---:|---:|---:|---:|---:|
+| 1 | 37.4 | 35.6 | 0.31 s | 0.36 s |
+| 2 | 48.8 | 42.8 | 0.77 s | 0.77 s |
+| 4 | 61.9 | 47.2 | 1.07 s | 1.41 s |
+| 8 | 66.7 | 59.2 | 2.38 s | 2.56 s |
+
+With a long prompt shared by every request (`--shared-prefix`, e.g. a system prompt), the
+prompt cache copies the prefix between slots: 90.4 tok/s and 0.20 s TTFT p95 at
+concurrency 8 (`llama-server`: 82.8 tok/s, 0.12 s). A single request runs at the same speed
+as `llama-server`, so the sandbox costs nothing measurable. Before continuous batching
+(P3), LiSa stayed at about 37 tok/s whatever the concurrency. Expect ±5 % between runs.
+
+Reproduce with any OpenAI-compatible server:
+
+```bash
+python3 bench/bench.py --url http://127.0.0.1:8080 --key "$KEY" --concurrency 1,2,4,8
+```
+
+Tuning: `parallel_slots` sets how many requests share a batch (each reserves KV cache for
+`max_context` tokens); `kv_cache_type: q8_0` halves KV memory; keep `n_threads` at or below
+the number of cores.
 
 ## Configuration
 
@@ -259,6 +301,9 @@ keep_alive_timeout_seconds: 5
 shutdown_timeout_seconds: 30
 
 n_threads: 0                     # 0 = one per available CPU
+parallel_slots: 4                # requests batched together (KV cache: slots × max_context)
+flash_attention: "auto"          # auto | on | off
+kv_cache_type: "f16"             # f16 | q8_0 | q4_0
 max_context: 4096
 temperature_default: 0.8
 top_p_default: 0.95
@@ -290,9 +335,10 @@ Unknown keys are rejected, so a typo can't silently leave a setting at its defau
 
 ## Limitations
 
-- Requests are served one at a time (continuous batching is planned, roadmap P4).
+- Prompt caching works within the running process (no disk or RAM-tier cache across
+  restarts); speculative decoding and multi-GPU split are not wired up.
 - Chat templates use llama.cpp's 54 built-in formats; arbitrary Jinja templates, tool calls
-  and structured (JSON) output are not supported yet.
+  and JSON-schema-constrained output (`json_schema`) are not supported yet (JSON mode is).
 - GPU support is NVIDIA CUDA only for now (llama.cpp's Vulkan/Metal/ROCm backends are not wired up).
 
 Contributing

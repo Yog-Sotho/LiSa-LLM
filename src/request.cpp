@@ -147,18 +147,31 @@ void reject_unsupported(const json& payload) {
             throw RequestError(std::string(key) + " is not supported", key);
         }
     }
-    if (const json* format = find_value(payload, "response_format")) {
-        if (!format->is_object() || format->value("type", "") != "text") {
-            throw RequestError(R"(only response_format {"type": "text"} is supported)",
-                               "response_format");
-        }
+}
+
+// response_format: "text" (default) or "json_object". json_schema needs a schema-to-
+// grammar converter, which llama.cpp keeps outside libllama.
+bool parse_json_mode(const json& payload) {
+    const json* format = find_value(payload, "response_format");
+    if (format == nullptr) {
+        return false;
     }
+    const std::string type = format->is_object() ? format->value("type", "") : "";
+    if (type == "text") {
+        return false;
+    }
+    if (type == "json_object") {
+        return true;
+    }
+    throw RequestError(R"(response_format must be {"type": "text"} or {"type": "json_object"})",
+                       "response_format");
 }
 
 GenerationParams parse_generation_params(const json& payload, const Config& cfg) {
     reject_unsupported(payload);
 
     GenerationParams params;
+    params.json_object = parse_json_mode(payload);
     params.max_tokens = cfg.max_new_tokens_default;
     const auto max_context = static_cast<long long>(cfg.max_context);
     for (const char* key : {"max_completion_tokens", "max_tokens", "max_new_tokens"}) {

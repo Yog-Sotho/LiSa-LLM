@@ -54,7 +54,8 @@ json finish_reason(StopReason reason) {
 json usage(const GenerationResult& result) {
     return json{{"prompt_tokens", result.prompt_tokens},
                 {"completion_tokens", result.completion_tokens},
-                {"total_tokens", result.prompt_tokens + result.completion_tokens}};
+                {"total_tokens", result.prompt_tokens + result.completion_tokens},
+                {"prompt_tokens_details", {{"cached_tokens", result.cached_tokens}}}};
 }
 
 json completion(const ResponseMeta& meta, const std::string& text, const GenerationResult& result) {

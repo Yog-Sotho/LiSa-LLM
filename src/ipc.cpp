@@ -80,6 +80,12 @@ void Channel::close() noexcept {
     }
 }
 
+void Channel::shutdown() const noexcept {
+    if (fd_ >= 0) {
+        ::shutdown(fd_, SHUT_RDWR);
+    }
+}
+
 // NOLINTNEXTLINE(readability-make-member-function-const): writes to the owned socket
 void Channel::send(const json& message) {
     const std::string payload = message.dump(-1, ' ', false, json::error_handler_t::replace);

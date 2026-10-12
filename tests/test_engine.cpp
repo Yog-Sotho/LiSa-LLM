@@ -3,10 +3,15 @@
 
 #include "inference.hpp"
 
+#include <algorithm>
 #include <catch2/catch_test_macros.hpp>
+#include <condition_variable>
 #include <cstdlib>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
+#include <vector>
 
 namespace {
 
@@ -193,4 +198,191 @@ TEST_CASE("engine: configured chat template", "[engine]") {
 
     cfg.chat_template = "no-such-template";
     CHECK_THROWS_AS(lisa::InferenceEngine(cfg), std::runtime_error);
+}
+
+TEST_CASE("engine: concurrent requests don't affect each other", "[engine][batching]") {
+    lisa::InferenceEngine* engine = shared_engine();
+    if (engine == nullptr) {
+        SKIP("LISA_TEST_MODEL not set");
+    }
+    REQUIRE(engine->slots() == 4);
+    // More requests than slots, with different prompts and lengths: each must produce
+    // exactly what it produces alone.
+    const std::vector<std::string> prompts = {"Once upon a time", "The little dog", "In the forest",
+                                              "Lily was happy",   "One day, Tom",   "The sun was"};
+    std::vector<std::string> alone;
+    for (std::size_t i = 0; i < prompts.size(); ++i) {
+        alone.push_back(
+            run(*engine, engine->tokenize(prompts[i]), greedy(8 + static_cast<int>(i) * 3)));
+    }
+    for (int round = 0; round < 3; ++round) {
+        std::vector<std::string> together(prompts.size());
+        std::vector<std::thread> threads;
+        for (std::size_t i = 0; i < prompts.size(); ++i) {
+            threads.emplace_back([&, i] {
+                together[i] =
+                    run(*engine, engine->tokenize(prompts[i]), greedy(8 + static_cast<int>(i) * 3));
+            });
+        }
+        for (std::thread& t : threads) {
+            t.join();
+        }
+        CHECK(together == alone);
+    }
+}
+
+TEST_CASE("engine: the prompt cache reuses a shared prefix", "[engine][batching]") {
+    lisa::InferenceEngine* engine = shared_engine();
+    if (engine == nullptr) {
+        SKIP("LISA_TEST_MODEL not set");
+    }
+    const auto prompt = engine->tokenize("Once upon a time, there was a little girl named");
+    lisa::GenerationResult first;
+    lisa::GenerationResult second;
+    const std::string a = run(*engine, prompt, greedy(10), &first);
+    const std::string b = run(*engine, prompt, greedy(10), &second);
+    CHECK(a == b);
+    CHECK(second.cached_tokens == prompt.size() - 1);
+
+    // A longer prompt starting with the same text reuses that part.
+    auto extended = prompt;
+    const auto more = engine->tokenize(" Lily. She");
+    extended.insert(extended.end(), more.begin() + 1, more.end());  // skip BOS
+    lisa::GenerationResult third;
+    (void)run(*engine, extended, greedy(4), &third);
+    CHECK(third.cached_tokens >= prompt.size() - 1);
+}
+
+TEST_CASE("engine: cancelling one request leaves the others running", "[engine][batching]") {
+    lisa::InferenceEngine* engine = shared_engine();
+    if (engine == nullptr) {
+        SKIP("LISA_TEST_MODEL not set");
+    }
+    const auto prompt = engine->tokenize("The little dog");
+    const std::string expected = run(*engine, prompt, greedy(30));
+
+    std::string survivor;
+    lisa::GenerationResult cancelled_result;
+    std::thread cancelled([&] {
+        int pieces = 0;
+        cancelled_result = engine->generate(engine->tokenize("In the forest"), greedy(60),
+                                            [&](std::string_view) { return ++pieces < 3; });
+    });
+    std::thread kept([&] { survivor = run(*engine, prompt, greedy(30)); });
+    cancelled.join();
+    kept.join();
+    CHECK(cancelled_result.reason == lisa::StopReason::cancelled);
+    CHECK(survivor == expected);
+}
+
+TEST_CASE("engine: async submit and cancel before start", "[engine][batching]") {
+    lisa::InferenceEngine* engine = shared_engine();
+    if (engine == nullptr) {
+        SKIP("LISA_TEST_MODEL not set");
+    }
+    std::mutex mutex;
+    std::condition_variable done;
+    int finished = 0;
+    std::vector<lisa::StopReason> reasons;
+    lisa::InferenceEngine::Callbacks callbacks;
+    callbacks.on_piece = [](std::string_view) { return true; };
+    callbacks.on_done = [&](const lisa::GenerationResult& r) {
+        const std::lock_guard<std::mutex> lock(mutex);
+        reasons.push_back(r.reason);
+        ++finished;
+        done.notify_all();
+    };
+    callbacks.on_error = [&](const std::exception_ptr&) {
+        const std::lock_guard<std::mutex> lock(mutex);
+        ++finished;
+        done.notify_all();
+    };
+    // Fill every slot with long requests, then queue one more and cancel it at once.
+    std::vector<lisa::InferenceEngine::RequestId> ids;
+    for (std::size_t i = 0; i <= engine->slots(); ++i) {
+        ids.push_back(engine->submit(engine->tokenize("Once upon a time"), greedy(100), callbacks));
+    }
+    engine->cancel(ids.back());
+    for (std::size_t i = 0; i + 1 < ids.size(); ++i) {
+        engine->cancel(ids[i]);
+    }
+    std::unique_lock<std::mutex> lock(mutex);
+    done.wait(lock, [&] { return finished == static_cast<int>(ids.size()); });
+    CHECK(std::count(reasons.begin(), reasons.end(), lisa::StopReason::cancelled) >= 1);
+}
+
+TEST_CASE("engine: a busy slot's cached prefix is copied to a new slot", "[engine][batching]") {
+    lisa::InferenceEngine* engine = shared_engine();
+    if (engine == nullptr) {
+        SKIP("LISA_TEST_MODEL not set");
+    }
+    // Long enough (> 32 shared tokens) for a copy to be worth it.
+    const auto prompt = engine->tokenize(
+        "Once upon a time, there was a little girl named Lily. She loved to play outside in "
+        "the sun with her dog. One day, she saw a big red ball in the park and");
+    REQUIRE(prompt.size() > 40);
+    const std::string expected = run(*engine, prompt, greedy(8));
+
+    // Keep the slot holding the prompt busy with a long generation...
+    std::mutex mutex;
+    std::condition_variable changed;
+    bool started = false;
+    bool finished = false;
+    lisa::InferenceEngine::Callbacks callbacks;
+    callbacks.on_piece = [&](std::string_view) {
+        const std::lock_guard<std::mutex> lock(mutex);
+        started = true;
+        changed.notify_all();
+        return true;
+    };
+    callbacks.on_done = [&](const lisa::GenerationResult&) {
+        const std::lock_guard<std::mutex> lock(mutex);
+        finished = true;
+        changed.notify_all();
+    };
+    callbacks.on_error = [&](const std::exception_ptr&) {
+        const std::lock_guard<std::mutex> lock(mutex);
+        finished = true;
+        changed.notify_all();
+    };
+    const auto busy = engine->submit(prompt, greedy(60), callbacks);
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        changed.wait(lock, [&] { return started; });
+    }
+    // ...so the same prompt goes to another slot, which copies the prefix.
+    lisa::GenerationResult result;
+    CHECK(run(*engine, prompt, greedy(8), &result) == expected);
+    CHECK(result.cached_tokens == prompt.size() - 1);
+
+    engine->cancel(busy);
+    std::unique_lock<std::mutex> lock(mutex);
+    changed.wait(lock, [&] { return finished; });
+}
+
+TEST_CASE("engine: JSON mode only produces JSON", "[engine]") {
+    lisa::InferenceEngine* engine = shared_engine();
+    if (engine == nullptr) {
+        SKIP("LISA_TEST_MODEL not set");
+    }
+    for (const float temperature : {0.0f, 0.9f}) {
+        lisa::GenerationParams params = greedy(80);
+        params.json_object = true;
+        params.sampling.temperature = temperature;
+        params.sampling.seed = 7;
+        lisa::GenerationResult result;
+        const std::string text =
+            run(*engine, engine->tokenize("Once upon a time"), params, &result);
+        INFO(text);
+        REQUIRE_FALSE(text.empty());
+        CHECK(text.front() == '{');
+        if (result.reason == lisa::StopReason::eos) {
+            // The grammar only allows the end once the object is complete.
+            CHECK_NOTHROW(lisa::json::parse(text));
+        } else {
+            // Cut off by max_tokens: what there is must still be valid so far.
+            CHECK(lisa::json::accept(text) == false);
+            CHECK(result.reason == lisa::StopReason::length);
+        }
+    }
 }

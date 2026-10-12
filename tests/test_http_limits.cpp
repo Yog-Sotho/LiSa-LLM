@@ -27,6 +27,7 @@ lisa::Config base_config() {
     cfg.listen_port = 0;
     cfg.api_key = kKey;
     cfg.max_new_tokens_default = 4;
+    cfg.parallel_slots = 1;  // the fake engine runs one request at a time
     return cfg;
 }
 

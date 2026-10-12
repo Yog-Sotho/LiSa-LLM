@@ -33,7 +33,8 @@ void to_json(json& j, const GenerationParams& p) {
              {"stop", p.stop},
              {"sampling", p.sampling},
              {"stream", p.stream},
-             {"include_usage", p.include_usage}};
+             {"include_usage", p.include_usage},
+             {"json_object", p.json_object}};
 }
 
 void from_json(const json& j, GenerationParams& p) {
@@ -43,6 +44,7 @@ void from_json(const json& j, GenerationParams& p) {
     j.at("sampling").get_to(p.sampling);
     j.at("stream").get_to(p.stream);
     j.at("include_usage").get_to(p.include_usage);
+    j.at("json_object").get_to(p.json_object);
 }
 
 void to_json(json& j, const ChatMessage& m) {
@@ -110,12 +112,14 @@ StopReason reason_from_name(const std::string& name) {
 
 void to_json(json& j, const GenerationResult& r) {
     j = json{{"prompt_tokens", r.prompt_tokens},
+             {"cached_tokens", r.cached_tokens},
              {"completion_tokens", r.completion_tokens},
              {"reason", reason_name(r.reason)}};
 }
 
 void from_json(const json& j, GenerationResult& r) {
     j.at("prompt_tokens").get_to(r.prompt_tokens);
+    j.at("cached_tokens").get_to(r.cached_tokens);
     j.at("completion_tokens").get_to(r.completion_tokens);
     r.reason = reason_from_name(j.at("reason").get<std::string>());
 }
@@ -125,6 +129,9 @@ WorkerSettings WorkerSettings::from_config(const Config& cfg) {
     s.chat_template = cfg.chat_template;
     s.n_threads = cfg.n_threads;
     s.max_context = cfg.max_context;
+    s.parallel_slots = cfg.parallel_slots;
+    s.flash_attention = cfg.flash_attention;
+    s.kv_cache_type = cfg.kv_cache_type;
     s.memory_limit_bytes = cfg.memory_limit_bytes;
     s.cgroup = cfg.sandbox_cgroup;
     s.seccomp_log = cfg.sandbox_seccomp_log;
@@ -135,6 +142,9 @@ void to_json(json& j, const WorkerSettings& s) {
     j = json{{"chat_template", s.chat_template},
              {"n_threads", s.n_threads},
              {"max_context", s.max_context},
+             {"parallel_slots", s.parallel_slots},
+             {"flash_attention", s.flash_attention},
+             {"kv_cache_type", s.kv_cache_type},
              {"memory_limit_bytes", s.memory_limit_bytes},
              {"cgroup", s.cgroup},
              {"seccomp_log", s.seccomp_log}};
@@ -144,6 +154,9 @@ void from_json(const json& j, WorkerSettings& s) {
     j.at("chat_template").get_to(s.chat_template);
     j.at("n_threads").get_to(s.n_threads);
     j.at("max_context").get_to(s.max_context);
+    j.at("parallel_slots").get_to(s.parallel_slots);
+    j.at("flash_attention").get_to(s.flash_attention);
+    j.at("kv_cache_type").get_to(s.kv_cache_type);
     j.at("memory_limit_bytes").get_to(s.memory_limit_bytes);
     j.at("cgroup").get_to(s.cgroup);
     j.at("seccomp_log").get_to(s.seccomp_log);

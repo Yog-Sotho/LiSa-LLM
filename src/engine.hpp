@@ -33,6 +33,7 @@ enum class StopReason : std::uint8_t { eos, stop_sequence, length, cancelled };
 
 struct GenerationResult {
     std::size_t prompt_tokens = 0;
+    std::size_t cached_tokens = 0;  // prompt tokens reused from the prompt cache
     std::size_t completion_tokens = 0;
     StopReason reason = StopReason::length;
 };

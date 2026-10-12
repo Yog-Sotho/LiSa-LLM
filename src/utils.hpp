@@ -72,6 +72,11 @@ struct Config {
     int shutdown_timeout_seconds = 30;  // how long SIGTERM waits for running requests
 
     int n_threads = 0;  // 0 = one per CPU the process may run on
+    // Requests generated at once (continuous batching). Each slot reserves KV cache for
+    // max_context tokens.
+    int parallel_slots = 4;
+    std::string flash_attention = "auto";  // auto | on | off
+    std::string kv_cache_type = "f16";     // f16 | q8_0 | q4_0 (quantised needs flash attention)
     std::uint32_t max_context = 2048;
     float temperature_default = 0.8f;
     float top_p_default = 0.95f;

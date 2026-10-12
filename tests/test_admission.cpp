@@ -30,11 +30,11 @@ bool never() {
 }  // namespace
 
 TEST_CASE("admission: one runs, max_waiting wait, the rest are refused", "[admission]") {
-    AdmissionQueue queue(1);
+    AdmissionQueue queue(1, 1);
     std::optional<AdmissionQueue::Slot> a = queue.try_join();
     REQUIRE(a);
     REQUIRE(value_of(a).wait(never));
-    CHECK(queue.busy());
+    CHECK(queue.running() == 1);
 
     std::optional<AdmissionQueue::Slot> b = queue.try_join();
     REQUIRE(b);
@@ -49,7 +49,7 @@ TEST_CASE("admission: one runs, max_waiting wait, the rest are refused", "[admis
 }
 
 TEST_CASE("admission: first come, first served", "[admission]") {
-    AdmissionQueue queue(8);
+    AdmissionQueue queue(1, 8);
     std::optional<AdmissionQueue::Slot> first = queue.try_join();
     REQUIRE(value_of(first).wait(never));
 
@@ -75,7 +75,7 @@ TEST_CASE("admission: first come, first served", "[admission]") {
 }
 
 TEST_CASE("admission: a request that leaves the line is skipped", "[admission]") {
-    AdmissionQueue queue(4);
+    AdmissionQueue queue(1, 4);
     std::optional<AdmissionQueue::Slot> running = queue.try_join();
     REQUIRE(value_of(running).wait(never));
     std::optional<AdmissionQueue::Slot> gone = queue.try_join();
@@ -87,7 +87,7 @@ TEST_CASE("admission: a request that leaves the line is skipped", "[admission]")
 }
 
 TEST_CASE("admission: give_up and close stop waiting", "[admission]") {
-    AdmissionQueue queue(4);
+    AdmissionQueue queue(1, 4);
     std::optional<AdmissionQueue::Slot> running = queue.try_join();
     REQUIRE(value_of(running).wait(never));
 
@@ -106,7 +106,7 @@ TEST_CASE("admission: give_up and close stop waiting", "[admission]") {
 }
 
 TEST_CASE("admission: wait_idle", "[admission]") {
-    AdmissionQueue queue(4);
+    AdmissionQueue queue(1, 4);
     CHECK(queue.wait_idle(std::chrono::steady_clock::now()));
     std::optional<AdmissionQueue::Slot> running = queue.try_join();
     REQUIRE(value_of(running).wait(never));
@@ -140,4 +140,32 @@ TEST_CASE("rate limiter: disabled at zero", "[admission]") {
     for (int i = 0; i < 100; ++i) {
         CHECK(limiter.acquire("a") == 0);
     }
+}
+
+TEST_CASE("admission: several run at once, in arrival order", "[admission]") {
+    AdmissionQueue queue(2, 1);
+    std::optional<AdmissionQueue::Slot> a = queue.try_join();
+    std::optional<AdmissionQueue::Slot> b = queue.try_join();
+    REQUIRE(value_of(a).wait(never));
+    REQUIRE(value_of(b).wait(never));  // two slots: both run
+    CHECK(queue.running() == 2);
+    std::optional<AdmissionQueue::Slot> c = queue.try_join();  // waits
+    REQUIRE(c);
+    CHECK_FALSE(queue.try_join());  // 2 running + 1 waiting = full
+    CHECK(queue.waiting() == 1);
+    a.reset();
+    CHECK(value_of(c).wait(never));
+    CHECK(queue.running() == 2);
+}
+
+TEST_CASE("admission: free slots don't count against the waiting limit", "[admission]") {
+    AdmissionQueue queue(4, 0);  // no waiting at all
+    std::vector<AdmissionQueue::Slot> slots;
+    for (int i = 0; i < 4; ++i) {
+        std::optional<AdmissionQueue::Slot> slot = queue.try_join();
+        REQUIRE(slot);
+        REQUIRE(value_of(slot).wait(never));
+        slots.push_back(std::move(value_of(slot)));
+    }
+    CHECK_FALSE(queue.try_join());
 }

@@ -6,6 +6,8 @@
 //   tokenize             -> {"tokens": "not a list"}
 //   tokenize_chat        -> a valid reply
 //   generate             -> {"piece": 5}
+//   probe                -> a reply without a request id
+// Replies carry the request's id unless noted.
 
 #include "ipc.hpp"
 #include "worker.hpp"
@@ -32,12 +34,15 @@ int main() {
         while (true) {
             const lisa::json request = channel.receive();
             const std::string op = request.value("op", "");
+            const lisa::json id = request.value("id", lisa::json());
             if (op == "tokenize") {
-                channel.send({{"tokens", "not a list"}});
+                channel.send({{"id", id}, {"tokens", "not a list"}});
             } else if (op == "tokenize_chat") {
-                channel.send({{"tokens", {1, 2, 3}}});
+                channel.send({{"id", id}, {"tokens", {1, 2, 3}}});
             } else if (op == "generate") {
-                channel.send({{"piece", 5}});
+                channel.send({{"id", id}, {"piece", 5}});
+            } else if (op == "probe") {
+                channel.send({{"probe", "answer"}});
             }
         }
     } catch (const std::exception&) {

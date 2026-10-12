@@ -20,6 +20,10 @@ namespace {
 constexpr std::size_t kMaxInput = 64U << 10;  // stays below the socket buffer size
 
 void decode_like_the_broker(const lisa::json& message) {
+    // The reader thread routes by id and kills the worker when it is missing.
+    if (!message.is_object() || !message.contains("id") || !message.at("id").is_number_unsigned()) {
+        return;
+    }
     try {
         if (message.contains("error")) {
             lisa::throw_error_reply(message);

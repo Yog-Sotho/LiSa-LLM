@@ -21,6 +21,7 @@ constexpr std::string_view kSha256Prefix = "sha256:";
 constexpr std::string_view kPlaceholderApiKey = "changeme";
 constexpr std::size_t kMinExposedKeyLength = 16;
 constexpr int kMaxQueuedRequests = 4096;
+constexpr int kMaxParallelSlots = 64;
 constexpr int kMaxTimeoutSeconds = 3600;
 constexpr mode_t kGroupOtherBits = 077;
 
@@ -57,6 +58,9 @@ const std::map<std::string, Setter, std::less<>>& fields() {
         {"keep_alive_timeout_seconds", field(&Config::keep_alive_timeout_seconds)},
         {"shutdown_timeout_seconds", field(&Config::shutdown_timeout_seconds)},
         {"n_threads", field(&Config::n_threads)},
+        {"parallel_slots", field(&Config::parallel_slots)},
+        {"flash_attention", field(&Config::flash_attention)},
+        {"kv_cache_type", field(&Config::kv_cache_type)},
         {"max_context", field(&Config::max_context)},
         {"temperature_default", field(&Config::temperature_default)},
         {"top_p_default", field(&Config::top_p_default)},
@@ -190,6 +194,17 @@ void validate(const Config& cfg) {
                 "an api_keys entry starting with sha256: must be followed "
                 "by 64 hexadecimal digits");
         }
+    }
+    require_range(cfg.parallel_slots, 1, kMaxParallelSlots, "parallel_slots");
+    if (cfg.flash_attention != "auto" && cfg.flash_attention != "on" &&
+        cfg.flash_attention != "off") {
+        throw std::runtime_error(R"(flash_attention must be "auto", "on" or "off")");
+    }
+    if (cfg.kv_cache_type != "f16" && cfg.kv_cache_type != "q8_0" && cfg.kv_cache_type != "q4_0") {
+        throw std::runtime_error(R"(kv_cache_type must be "f16", "q8_0" or "q4_0")");
+    }
+    if (cfg.kv_cache_type != "f16" && cfg.flash_attention == "off") {
+        throw std::runtime_error("a quantised kv_cache_type needs flash_attention");
     }
     require_range(cfg.max_queued_requests, 0, kMaxQueuedRequests, "max_queued_requests");
     require_range(cfg.rate_limit_per_minute, 0, 1'000'000, "rate_limit_per_minute");

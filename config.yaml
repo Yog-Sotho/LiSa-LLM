@@ -38,6 +38,11 @@ shutdown_timeout_seconds: 30 # SIGTERM waits this long for running requests; a s
                              # signal stops at once
 
 n_threads: 0                 # 0 = one per available CPU (more only slows it down)
+# Continuous batching: requests generated together. Each slot reserves KV cache for
+# max_context tokens (e.g. Qwen2.5-0.5B: ~12 KiB/token; Llama-2-7B: ~0.5 MiB/token at f16).
+parallel_slots: 4
+flash_attention: "auto"      # auto | on | off
+kv_cache_type: "f16"         # f16 | q8_0 | q4_0 (halves / quarters KV memory; needs flash attention)
 max_context: 4096            # capped at the model's training context
 temperature_default: 0.8     # 0 = greedy; used when a request omits temperature
 top_p_default: 0.95

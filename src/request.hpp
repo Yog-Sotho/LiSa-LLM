@@ -44,6 +44,7 @@ struct GenerationParams {
     SamplingParams sampling;
     bool stream = false;
     bool include_usage = false;  // stream_options.include_usage
+    bool json_object = false;    // response_format {"type": "json_object"}: output is JSON
 };
 
 struct ChatMessage {

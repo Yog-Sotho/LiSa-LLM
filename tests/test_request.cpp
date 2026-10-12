@@ -118,7 +118,9 @@ TEST_CASE("completion request: unsupported OpenAI features are rejected", "[requ
     check_rejects(R"({"prompt":"x","suffix":"z"})", "not supported", "suffix");
     check_rejects(R"({"prompt":"x","logit_bias":{"1":5}})", "not supported", "logit_bias");
     check_rejects(R"({"prompt":"x","tools":[{"type":"function"}]})", "not supported", "tools");
-    check_rejects(R"({"prompt":"x","response_format":{"type":"json_object"}})", "response_format",
+    check_rejects(R"({"prompt":"x","response_format":{"type":"json_schema"}})", "response_format",
+                  "response_format");
+    check_rejects(R"({"prompt":"x","response_format":"json"})", "response_format",
                   "response_format");
 }
 
