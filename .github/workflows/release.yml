@@ -1,0 +1,311 @@
+# Release pipeline. Pushing a tag vX.Y.Z (matching project(VERSION) in CMakeLists.txt and a
+# "## [X.Y.Z]" section in CHANGELOG.md) builds, signs and publishes:
+#   - portable Linux binaries (x86_64, aarch64) with SPDX SBOMs, Sigstore bundles and SLSA
+#     build provenance, attached to a GitHub release;
+#   - container images ghcr.io/<owner>/lisa-llm:{X.Y.Z,latest} (amd64 + arm64) and
+#     :{X.Y.Z,latest}-cuda (amd64), signed with cosign (keyless) and carrying SBOM and
+#     provenance attestations.
+# Running it by hand (workflow_dispatch) builds and tests everything but publishes nothing.
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      cuda:
+        description: Also build the CUDA image (slow)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  TEST_MODEL_URL: https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf
+  TEST_MODEL_SHA256: 270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d
+  CUDA_BUILD_IMAGE: nvidia/cuda:12.6.3-devel-ubuntu24.04@sha256:392c0df7b577ecae17a17f6ba7f2009c217bb4422f8431c053ae9af61a8c148a
+  CUDA_RUNTIME_IMAGE: nvidia/cuda:12.6.3-runtime-ubuntu24.04@sha256:92906d87596d638d35015c6353053121bd299d25943b875763321653884ba924
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      publish: ${{ steps.version.outputs.publish }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: version
+        run: |
+          version="$(sed -nE 's/^project\(LiSa-LLM VERSION ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' CMakeLists.txt)"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            if [[ "$GITHUB_REF_NAME" != "v${version}" ]]; then
+              echo "::error::tag ${GITHUB_REF_NAME} does not match project version ${version}"
+              exit 1
+            fi
+            if ! grep -q "^## \[${version}\]" CHANGELOG.md; then
+              echo "::error::CHANGELOG.md has no section for ${version}"
+              exit 1
+            fi
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  binaries:
+    needs: check
+    name: binary (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-24.04 }
+          - { arch: aarch64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
+    # Built on Ubuntu 22.04 so the binaries run on glibc 2.35+ systems.
+    container: ubuntu:22.04@sha256:5ec03bb3441e8b0bf3b4f9cd4629a1ae763010dc3035bb8da3ae6cf026486401
+    env:
+      CC: gcc-12
+      CXX: g++-12
+    steps:
+      - name: Install build tools
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            gcc-12 g++-12 ninja-build pkg-config libssl-dev libseccomp-dev git curl \
+            ca-certificates binutils python3-pip
+          pip3 install cmake==3.31.6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Download test model
+        run: |
+          curl -sSfL --retry 3 -o "$RUNNER_TEMP/stories260K.gguf" "$TEST_MODEL_URL"
+          echo "$TEST_MODEL_SHA256  $RUNNER_TEMP/stories260K.gguf" | sha256sum --check
+      - name: Build, test and package
+        env:
+          LISA_TEST_MODEL: ${{ runner.temp }}/stories260K.gguf
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          packaging/build-portable.sh build dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: binaries-${{ matrix.arch }}
+          path: dist/
+          if-no-files-found: error
+
+  image-cpu:
+    needs: check
+    name: image (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: linux/amd64, runner: ubuntu-24.04, tag: amd64 }
+          - { platform: linux/arm64, runner: ubuntu-24.04-arm, tag: arm64 }
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/lisa-llm" >> "$GITHUB_ENV"
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - if: needs.check.outputs.publish == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          build-args: VERSION=${{ needs.check.outputs.version }}
+          # Provenance and SBOM are attached to the multi-arch image in publish-images.
+          provenance: false
+          sbom: false
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=${{ needs.check.outputs.publish }}
+      - name: Record digest
+        if: needs.check.outputs.publish == 'true'
+        run: |
+          mkdir -p digests
+          echo "${{ steps.build.outputs.digest }}" > "digests/${{ matrix.tag }}"
+      - if: needs.check.outputs.publish == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: digest-${{ matrix.tag }}
+          path: digests/
+          if-no-files-found: error
+
+  image-cuda:
+    needs: check
+    if: needs.check.outputs.publish == 'true' || inputs.cuda
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Free disk space for the CUDA toolchain
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/lisa-llm" >> "$GITHUB_ENV"
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - if: needs.check.outputs.publish == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64
+          build-args: |
+            VERSION=${{ needs.check.outputs.version }}
+            BUILD_IMAGE=${{ env.CUDA_BUILD_IMAGE }}
+            RUNTIME_IMAGE=${{ env.CUDA_RUNTIME_IMAGE }}
+            LISA_CUDA=ON
+          provenance: false
+          sbom: false
+          push: ${{ needs.check.outputs.publish == 'true' }}
+          tags: |
+            ${{ env.IMAGE }}:${{ needs.check.outputs.version }}-cuda
+            ${{ env.IMAGE }}:latest-cuda
+      - name: Record digest
+        if: needs.check.outputs.publish == 'true'
+        run: |
+          mkdir -p digests
+          echo "${{ steps.build.outputs.digest }}" > digests/cuda
+      - if: needs.check.outputs.publish == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: digest-cuda
+          path: digests/
+          if-no-files-found: error
+
+  publish-images:
+    needs: [check, image-cpu, image-cuda]
+    if: needs.check.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+      id-token: write      # Sigstore keyless signing
+      attestations: write
+    steps:
+      - run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/lisa-llm" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: digest-*
+          path: digests
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - name: Create the multi-arch image
+        id: cpu
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          docker buildx imagetools create \
+            -t "${IMAGE}:${VERSION}" -t "${IMAGE}:latest" \
+            "${IMAGE}@$(cat digests/amd64)" "${IMAGE}@$(cat digests/arm64)"
+          digest="$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{json .Manifest}}' | jq -r .digest)"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          echo "cuda=$(cat digests/cuda)" >> "$GITHUB_OUTPUT"
+      - name: Sign the images (keyless)
+        run: |
+          cosign sign --yes "${IMAGE}@${{ steps.cpu.outputs.digest }}"
+          cosign sign --yes "${IMAGE}@${{ steps.cpu.outputs.cuda }}"
+      - name: SBOM (CPU image)
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          image: ${{ env.IMAGE }}@${{ steps.cpu.outputs.digest }}
+          format: spdx-json
+          output-file: lisa-llm-image-${{ needs.check.outputs.version }}.spdx.json
+          upload-artifact: false
+      - name: SBOM (CUDA image)
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          image: ${{ env.IMAGE }}@${{ steps.cpu.outputs.cuda }}
+          format: spdx-json
+          output-file: lisa-llm-image-${{ needs.check.outputs.version }}-cuda.spdx.json
+          upload-artifact: false
+      - name: Attach the SBOMs as signed attestations
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          cosign attest --yes --type spdxjson \
+            --predicate "lisa-llm-image-${VERSION}.spdx.json" "${IMAGE}@${{ steps.cpu.outputs.digest }}"
+          cosign attest --yes --type spdxjson \
+            --predicate "lisa-llm-image-${VERSION}-cuda.spdx.json" "${IMAGE}@${{ steps.cpu.outputs.cuda }}"
+      - name: Build provenance (CPU image)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.cpu.outputs.digest }}
+          push-to-registry: true
+      - name: Build provenance (CUDA image)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.cpu.outputs.cuda }}
+          push-to-registry: true
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sbom-images
+          path: lisa-llm-image-*.spdx.json
+          if-no-files-found: error
+
+  release:
+    needs: [check, binaries, publish-images]
+    if: needs.check.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write      # create the GitHub release
+      id-token: write      # Sigstore keyless signing
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: "{binaries-*,sbom-images}"
+          path: dist
+          merge-multiple: true
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - name: Sign the archives (keyless)
+        run: |
+          for archive in dist/*.tar.gz; do
+            cosign sign-blob --yes --bundle "${archive}.sigstore.json" "${archive}"
+          done
+      - name: Build provenance (archives)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*.tar.gz
+      - name: Checksums
+        run: |
+          rm -f dist/*.tar.gz.sha256
+          (cd dist && sha256sum ./*.tar.gz ./*.spdx.json | sed 's# \./# #' > SHA256SUMS)
+          cat dist/SHA256SUMS
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          {
+            awk -v v="## [${VERSION}]" 'index($0, v) == 1 {found = 1; next} /^## \[/ {found = 0} found' CHANGELOG.md
+            echo
+            echo "Verify downloads and images as described in [Verifying a release](https://github.com/${GITHUB_REPOSITORY}/blob/v${VERSION}/README.md#verifying-a-release)."
+          } > notes.md
+          gh release create "v${VERSION}" --verify-tag --title "LiSa-LLM ${VERSION}" \
+            --notes-file notes.md dist/*

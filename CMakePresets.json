@@ -40,6 +40,14 @@
       }
     },
     {
+      "name": "coverage",
+      "displayName": "Debug with coverage instrumentation (gcovr report)",
+      "inherits": "dev",
+      "cacheVariables": {
+        "LISA_COVERAGE": "ON"
+      }
+    },
+    {
       "name": "fuzz",
       "displayName": "libFuzzer targets + ASan/UBSan (needs CC=clang CXX=clang++)",
       "inherits": "asan-ubsan",
@@ -59,6 +67,15 @@
       }
     },
     {
+      "name": "portable",
+      "displayName": "Release binary for distribution (static deps except glibc)",
+      "inherits": "release",
+      "cacheVariables": {
+        "LISA_PORTABLE": "ON",
+        "GGML_OPENMP": "OFF"
+      }
+    },
+    {
       "name": "cuda",
       "displayName": "Release with CUDA offload",
       "inherits": "release",
@@ -72,7 +89,9 @@
     { "name": "asan-ubsan", "configurePreset": "asan-ubsan" },
     { "name": "tsan", "configurePreset": "tsan" },
     { "name": "fuzz", "configurePreset": "fuzz" },
+    { "name": "coverage", "configurePreset": "coverage" },
     { "name": "release", "configurePreset": "release" },
+    { "name": "portable", "configurePreset": "portable" },
     { "name": "cuda", "configurePreset": "cuda" }
   ],
   "testPresets": [
@@ -83,6 +102,7 @@
       "execution": { "noTestsAction": "error" }
     },
     { "name": "dev", "inherits": "base", "configurePreset": "dev" },
+    { "name": "coverage", "inherits": "base", "configurePreset": "coverage" },
     {
       "name": "asan-ubsan",
       "inherits": "base",
@@ -98,6 +118,7 @@
       "configurePreset": "tsan",
       "environment": { "TSAN_OPTIONS": "halt_on_error=1" }
     },
-    { "name": "release", "inherits": "base", "configurePreset": "release" }
+    { "name": "release", "inherits": "base", "configurePreset": "release" },
+    { "name": "portable", "inherits": "base", "configurePreset": "portable" }
   ]
 }

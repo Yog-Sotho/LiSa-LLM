@@ -17,3 +17,6 @@ compile_commands.json
 # Python bytecode (bench/)
 __pycache__/
 *.pyc
+
+# Release packaging output (packaging/build-portable.sh)
+/dist/

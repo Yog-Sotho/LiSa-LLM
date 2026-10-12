@@ -17,15 +17,15 @@
 ## Project status
 
 LiSa-LLM is being rebuilt following the [codebase audit](docs/project/codebase_audit.md).
-**Phases P0–P4 are done**: the project builds reproducibly, inference runs on
+**All roadmap phases (P0–P5) are done**: the project builds reproducibly, inference runs on
 [llama.cpp](https://github.com/ggml-org/llama.cpp)'s `libllama`, the API is OpenAI-compatible
 with chat templates, the model runs in an isolated worker process, and the API is hardened
 for exposure (multiple hashed keys, rate limits, a bounded queue, timeouts, mTLS, Prometheus
 metrics, graceful shutdown). CI runs sanitizers, static analysis, end-to-end model and HTTP
 tests, escape attempts against a live worker, and libFuzzer on the request and IPC decoders.
 With continuous batching and a prompt cache it is faster than llama.cpp's own `llama-server`
-under concurrent load, sandbox included (see [Performance](#performance)). Next up: project
-hygiene (P5: releases, SBOM, coverage).
+under concurrent load, sandbox included (see [Performance](#performance)). Releases ship
+portable binaries and container images with SBOMs, Sigstore signatures and build provenance.
 
 ## Features
 
@@ -61,6 +61,90 @@ hygiene (P5: releases, SBOM, coverage).
   workers are logged and restarted. Optional `model_sha256` pinning. See the
   [threat model](docs/project/threat_model.md).
 
+## Install
+
+### Release binaries (Linux x86_64 / aarch64)
+
+```bash
+VERSION=1.0.0 ARCH=x86_64   # or aarch64
+curl -LO https://github.com/Yog-Sotho/LiSa-LLM/releases/download/v$VERSION/lisa-$VERSION-linux-$ARCH.tar.gz
+tar xzf lisa-$VERSION-linux-$ARCH.tar.gz
+./lisa-$VERSION-linux-$ARCH/bin/lisa --model models/model.gguf
+```
+
+Every dependency but glibc is linked in; the binaries run on glibc 2.35+ (Ubuntu 22.04,
+Debian 12, Fedora 36, RHEL 10 and newer). The x86_64 build needs AVX2, FMA and F16C
+(Haswell / Excavator, 2013, or newer) and says so at startup otherwise. Verify downloads
+first: [Verifying a release](#verifying-a-release).
+
+### Container images
+
+```bash
+KEY="$(openssl rand -hex 24)"; echo "API key: $KEY"
+docker run --rm -p 8080:8080 -v ./models:/models:ro \
+  -e LISA_API_KEYS="$KEY" -e LISA_API_KEY= \
+  ghcr.io/yog-sotho/lisa-llm:1.0.0          # :1.0.0-cuda for NVIDIA GPUs
+```
+
+`LISA_API_KEY=` clears the image's placeholder key; the model is expected at
+`/models/model.gguf`.
+
+[`docker-compose.yml`](docker-compose.yml) has ready-made services: `lisa` (CPU),
+`lisa-sandboxed` (CPU with the model in the sandboxed worker) and `lisa-cuda` (GPU, profile
+`gpu`). The images are multi-arch (amd64, arm64; CUDA: amd64), run as UID 10001 and have a
+`HEALTHCHECK` on `/readyz`.
+
+### Verifying a release
+
+Archives and images are signed with Sigstore by the release workflow (keyless: the
+certificate names the workflow and tag) and carry SLSA build provenance; SBOMs (SPDX) are
+attached to the release and to the images.
+
+```bash
+VERSION=1.0.0 FILE=lisa-1.0.0-linux-x86_64.tar.gz
+IDENTITY="https://github.com/Yog-Sotho/LiSa-LLM/.github/workflows/release.yml@refs/tags/v$VERSION"
+ISSUER=https://token.actions.githubusercontent.com
+
+# Archive: checksum, signature, provenance
+sha256sum --check --ignore-missing SHA256SUMS
+cosign verify-blob "$FILE" --bundle "$FILE.sigstore.json" \
+  --certificate-identity "$IDENTITY" --certificate-oidc-issuer "$ISSUER"
+gh attestation verify "$FILE" --repo Yog-Sotho/LiSa-LLM
+
+# Image: signature, provenance, SBOM
+cosign verify ghcr.io/yog-sotho/lisa-llm:$VERSION \
+  --certificate-identity "$IDENTITY" --certificate-oidc-issuer "$ISSUER"
+gh attestation verify oci://ghcr.io/yog-sotho/lisa-llm:$VERSION --repo Yog-Sotho/LiSa-LLM
+cosign verify-attestation --type spdxjson ghcr.io/yog-sotho/lisa-llm:$VERSION \
+  --certificate-identity "$IDENTITY" --certificate-oidc-issuer "$ISSUER" > /dev/null
+```
+
+### Support matrix
+
+| | Status |
+|---|---|
+| Linux x86_64 | Release binary (x86-64-v3) and images; developed and benchmarked here |
+| Linux aarch64 | Release binary and image, built and unit-tested by the release workflow on GitHub's Arm runners |
+| Kernel | 5.13+ recommended (Landlock); the sandbox needs unprivileged user namespaces and seccomp |
+| NVIDIA GPUs | CUDA image for compute capability 7.5–9.0 (Turing–Hopper); any GPU when built from source; GPU mode runs without the sandbox |
+| macOS, Windows, BSD | Not supported (the sandbox is Linux-only) |
+
+## Architecture
+
+```
+ clients ──HTTPS──▶ broker (lisa)                       worker (lisa --sandbox-worker)
+                    OpenAI API, auth, rate limits,  ◀──▶ libllama, continuous batching,
+                    queue, metrics, TLS                  prompt cache
+                    never parses the model     socket    namespaces, empty read-only
+                    verifies model SHA-256     (JSON     root, Landlock, seccomp,
+                    restarts a dead worker     frames)   no capabilities, rlimits
+```
+
+The broker only ever handles requests; the model file is parsed by the worker, which locks
+itself down before reading it. Details and limits: [threat model](docs/project/threat_model.md).
+Contributors: see [CONTRIBUTING.md](CONTRIBUTING.md); security reports:
+[SECURITY.md](SECURITY.md).
+
 ## Build & Run
 
 ### Dependencies
@@ -95,7 +179,7 @@ point `FETCHCONTENT_SOURCE_DIR_<NAME>` at local checkouts.
 ### Compile
 
 ```bash
-cmake --preset release          # portable optimised build (presets: dev, asan-ubsan, tsan, release, cuda)
+cmake --preset release          # optimised build (presets: dev, asan-ubsan, tsan, coverage, release, portable, cuda, fuzz)
 cmake --build --preset release
 ctest --preset release          # unit tests; set LISA_TEST_MODEL=/path/to/model.gguf for engine tests
 ```
@@ -225,7 +309,7 @@ built-in formats: Llama 2/3/4, ChatML, Mistral, Gemma, Phi, DeepSeek, Qwen, Comm
 template fall back to ChatML. Message content that spells a special token (e.g.
 `<|im_end|>`) is rejected, so users cannot forge role boundaries.
 
-### Docker
+### Docker (from source)
 
 ```bash
 docker build -t lisa-llm .     # CUDA: see the build args at the top of the Dockerfile

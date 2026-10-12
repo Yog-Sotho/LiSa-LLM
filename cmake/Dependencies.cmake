@@ -4,6 +4,12 @@
 # Offline / air-gapped builds: point FETCHCONTENT_SOURCE_DIR_<NAME> at a local checkout
 # (e.g. -DFETCHCONTENT_SOURCE_DIR_LLAMA_CPP=/src/llama.cpp); the commit check is then skipped.
 
+# Portable binaries link OpenSSL statically. Set before anything (cpp-httplib included)
+# looks OpenSSL up, because the result is cached.
+if(LISA_PORTABLE)
+    set(OPENSSL_USE_STATIC_LIBS TRUE)
+endif()
+
 include(FetchContent)
 find_package(Git REQUIRED)
 find_package(Threads REQUIRED)
@@ -83,8 +89,10 @@ FetchContent_Declare(nlohmann_json
 )
 FetchContent_MakeAvailable(nlohmann_json)
 
-# --- yaml-cpp (system package preferred) -----------------------------------------------------
-find_package(yaml-cpp 0.7 CONFIG QUIET)
+# --- yaml-cpp (system package preferred; built from source, static, for portable binaries) ---
+if(NOT LISA_PORTABLE)
+    find_package(yaml-cpp 0.7 CONFIG QUIET)
+endif()
 if(yaml-cpp_FOUND)
     message(STATUS "yaml-cpp: using system package ${yaml-cpp_VERSION}")
 else()
@@ -110,4 +118,12 @@ endif()
 if(LISA_SANDBOX)
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(LIBSECCOMP REQUIRED IMPORTED_TARGET libseccomp)
+    if(LISA_PORTABLE)
+        find_library(LISA_SECCOMP_STATIC NAMES libseccomp.a REQUIRED)
+        add_library(lisa_seccomp INTERFACE)
+        target_link_libraries(lisa_seccomp INTERFACE "${LISA_SECCOMP_STATIC}")
+        target_include_directories(lisa_seccomp INTERFACE ${LIBSECCOMP_INCLUDE_DIRS})
+    else()
+        add_library(lisa_seccomp ALIAS PkgConfig::LIBSECCOMP)
+    endif()
 endif()

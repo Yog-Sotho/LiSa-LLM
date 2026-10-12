@@ -34,6 +34,7 @@ struct CliOptions {
     bool config_explicit = false;
     lisa::ConfigOverrides overrides;
     bool check_config = false;
+    bool health_check = false;
 };
 
 void print_usage(std::ostream& out) {
@@ -45,6 +46,7 @@ void print_usage(std::ostream& out) {
            "      --host <addr>    Address to listen on (overrides listen_addr)\n"
            "  -p, --port <port>    Port to listen on (overrides listen_port)\n"
            "      --check-config   Validate the configuration and the model file, then exit\n"
+           "      --health-check   Ask the configured server whether it is ready (exit 0/1)\n"
            "      --hash-key       Read an API key from stdin and print its sha256: entry\n"
            "  -v, --version        Print the version and exit\n"
            "  -h, --help           Show this help and exit\n"
@@ -99,6 +101,10 @@ std::optional<CliOptions> parse_cli(int argc, const char* const argv[], int& exi
         }
         if (arg == "--check-config") {
             options.check_config = true;
+            continue;
+        }
+        if (arg == "--health-check") {
+            options.health_check = true;
             continue;
         }
         const bool takes_value = arg == "-c" || arg == "--config" || arg == "-m" ||
@@ -255,6 +261,9 @@ int run(int argc, char* argv[]) {
         return 1;
     }
 
+    if (options->health_check) {
+        return lisa::health_check(cfg, std::cout);
+    }
     if (const std::string problem = lisa::exposure_problem(cfg); !problem.empty()) {
         lisa::log_error("Refusing to listen on a non-loopback address: " + problem +
                             "; use a random key of at least 16 characters",
@@ -279,9 +288,29 @@ int run(int argc, char* argv[]) {
     return run_server(cfg);
 }
 
+#ifdef LISA_NEEDS_X86_64_V3
+// A portable x86-64 build uses x86-64-v3 instructions throughout the engine.
+bool cpu_supported() {
+    __builtin_cpu_init();
+    if (!__builtin_cpu_supports("avx2") || !__builtin_cpu_supports("fma") ||
+        !__builtin_cpu_supports("f16c")) {
+        std::cerr << "lisa: this build needs an x86-64 CPU with AVX2, FMA and F16C (Intel Haswell "
+                     "/ AMD Excavator, 2013, or newer). Build from source with -DLISA_NATIVE=ON "
+                     "to run on this machine.\n";
+        return false;
+    }
+    return true;
+}
+#endif
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
+#ifdef LISA_NEEDS_X86_64_V3
+    if (!cpu_supported()) {
+        return 1;
+    }
+#endif
     if (argc == 2 && std::string_view(argv[1]) == lisa::kWorkerFlag) {
         return lisa::worker_main();
     }
