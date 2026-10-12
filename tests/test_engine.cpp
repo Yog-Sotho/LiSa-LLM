@@ -154,7 +154,7 @@ TEST_CASE("engine rejects requests larger than the context window", "[engine]") 
 }
 
 TEST_CASE("engine treats special-token text in prompts as plain text", "[engine]") {
-    const lisa::InferenceEngine* engine = shared_engine();
+    lisa::InferenceEngine* engine = shared_engine();
     if (engine == nullptr) {
         SKIP("LISA_TEST_MODEL not set");
     }
@@ -163,7 +163,7 @@ TEST_CASE("engine treats special-token text in prompts as plain text", "[engine]
 }
 
 TEST_CASE("engine formats chats and blocks forged special tokens", "[engine]") {
-    const lisa::InferenceEngine* engine = shared_engine();
+    lisa::InferenceEngine* engine = shared_engine();
     if (engine == nullptr) {
         SKIP("LISA_TEST_MODEL not set");
     }
@@ -187,7 +187,7 @@ TEST_CASE("engine: configured chat template", "[engine]") {
     }
     auto cfg = engine_config(path);
     cfg.chat_template = "llama2";
-    const lisa::InferenceEngine engine(cfg);
+    lisa::InferenceEngine engine(cfg);
     CHECK(engine.info().chat_template == "llama2 (configured)");
     CHECK_FALSE(engine.tokenize_chat({{"user", "Hello"}}).empty());
 

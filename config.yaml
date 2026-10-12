@@ -22,8 +22,16 @@ temperature_default: 0.8     # 0 = greedy; used when a request omits temperature
 top_p_default: 0.95
 max_new_tokens_default: 256  # when a request omits max_tokens (capped by free context)
 
-memory_limit_bytes: 4294967296  # 4 GiB (sandbox only)
-# Experimental and not isolating yet; being redesigned (docs/project/codebase_audit.md, P2).
-sandbox_enabled: false
-use_gpu: true                # needs a CUDA build (-DLISA_CUDA=ON)
+# Optional: refuse to start unless the model file has this SHA-256 (64 hex digits).
+model_sha256: ""
+
+# The model is parsed only inside an isolated worker process (namespaces, read-only empty
+# root, Landlock, seccomp). Needs unprivileged user namespaces; see
+# docs/project/threat_model.md. If it cannot be set up, the server refuses to start.
+sandbox_enabled: true
+memory_limit_bytes: 4294967296  # worker heap limit, 4 GiB
+sandbox_cgroup: ""              # optional delegated cgroup v2 dir for memory/pids limits
+sandbox_seccomp_log: false      # diagnose only: log blocked syscalls instead of killing
+
+use_gpu: true                # needs a CUDA build (-DLISA_CUDA=ON) and sandbox_enabled: false
 gpu_layers: -1               # -1 = all layers

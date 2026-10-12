@@ -215,7 +215,7 @@ std::vector<Token> InferenceEngine::tokenize_text(std::string_view text, bool ad
     return tokens;
 }
 
-std::vector<Token> InferenceEngine::tokenize(std::string_view text) const {
+std::vector<Token> InferenceEngine::tokenize(std::string_view text) {
     std::vector<Token> tokens = tokenize_text(text, /*add_special=*/true, /*parse_special=*/false);
     if (tokens.empty()) {
         throw RequestError("prompt produced no tokens", "prompt");
@@ -251,7 +251,7 @@ std::string InferenceEngine::apply_chat_template(const std::vector<ChatMessage>&
     return formatted;
 }
 
-std::vector<Token> InferenceEngine::tokenize_chat(const std::vector<ChatMessage>& messages) const {
+std::vector<Token> InferenceEngine::tokenize_chat(const std::vector<ChatMessage>& messages) {
     for (std::size_t i = 0; i < messages.size(); ++i) {
         // parse_special only changes the result when the text spells a special token.
         const std::string& content = messages[i].content;
@@ -352,6 +352,13 @@ GenerationResult InferenceEngine::generate(const std::vector<Token>& prompt_toke
         on_piece(tail);
     }
     return result;
+}
+
+void InferenceEngine::warm_up() {
+    GenerationParams params;
+    params.max_tokens = 1;
+    params.sampling.temperature = 0.0f;
+    (void)generate(tokenize("Hello"), params, [](std::string_view) { return true; });
 }
 
 }  // namespace lisa

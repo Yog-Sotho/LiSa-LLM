@@ -40,7 +40,7 @@ TEST_CASE("load_config applies defaults for optional keys", "[config]") {
     CHECK(cfg.listen_addr == "127.0.0.1");
     CHECK(cfg.listen_port == 8080);
     CHECK_FALSE(cfg.enable_tls);
-    CHECK_FALSE(cfg.sandbox_enabled);
+    CHECK(cfg.sandbox_enabled);  // secure by default
     CHECK(cfg.gpu_layers == -1);
 }
 

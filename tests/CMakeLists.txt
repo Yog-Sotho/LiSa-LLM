@@ -4,6 +4,8 @@ lisa_fetch_git(Catch2
     317ac1ed4c0bb6e6b91eafc817e05c488feffcb3)
 
 add_executable(lisa_tests
+    main.cpp
+    sandbox_probes.cpp
     test_config.cpp
     test_request.cpp
     test_utf8.cpp
@@ -11,8 +13,11 @@ add_executable(lisa_tests
     test_openai.cpp
     test_engine.cpp
     test_server.cpp
+    test_ipc.cpp
+    test_sandbox.cpp
 )
-target_link_libraries(lisa_tests PRIVATE lisa_core httplib::httplib Catch2::Catch2WithMain)
+# Custom main: the test binary also acts as the sandboxed worker.
+target_link_libraries(lisa_tests PRIVATE lisa_core httplib::httplib Catch2::Catch2)
 lisa_configure_target(lisa_tests)
 
 FetchContent_GetProperties(Catch2 SOURCE_DIR catch2_source_dir)

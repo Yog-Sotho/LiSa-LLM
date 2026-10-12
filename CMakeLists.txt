@@ -50,6 +50,11 @@ add_library(lisa_core STATIC
     src/inference.cpp
     src/server.cpp
     src/sandbox.cpp
+    src/ipc.cpp
+    src/protocol.cpp
+    src/model_file.cpp
+    src/worker.cpp
+    src/sandboxed_engine.cpp
 )
 target_include_directories(lisa_core PUBLIC
     src
@@ -62,9 +67,13 @@ target_link_libraries(lisa_core
         llama
         httplib::httplib
         yaml-cpp::yaml-cpp
+        OpenSSL::Crypto
         Threads::Threads
 )
 lisa_configure_target(lisa_core)
+if(LISA_CUDA)
+    target_compile_definitions(lisa_core PRIVATE LISA_CUDA_BUILD)
+endif()
 
 if(LISA_SANDBOX)
     target_link_libraries(lisa_core PRIVATE PkgConfig::LIBSECCOMP)

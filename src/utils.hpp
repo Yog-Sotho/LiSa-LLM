@@ -54,9 +54,12 @@ struct Config {
     float temperature_default = 0.8f;
     float top_p_default = 0.95f;
     int max_new_tokens_default = 128;
-    std::uint64_t memory_limit_bytes = 2ULL << 30;
-    // The sandbox is being redesigned (roadmap P2) and does not isolate the server yet.
-    bool sandbox_enabled = false;
+    std::string model_sha256;  // optional hex SHA-256 the model file must match
+    // Run the model in an isolated worker process (namespaces, Landlock, seccomp).
+    bool sandbox_enabled = true;
+    std::uint64_t memory_limit_bytes = 4ULL << 30;  // worker heap limit (sandbox only)
+    std::string sandbox_cgroup;                     // optional delegated cgroup v2 directory
+    bool sandbox_seccomp_log = false;               // log seccomp violations instead of killing
     bool use_gpu = true;
     int gpu_layers = -1;  // -1 = offload every layer when built with CUDA
 };

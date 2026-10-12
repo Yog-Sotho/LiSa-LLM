@@ -8,6 +8,7 @@ namespace lisa {
 namespace {
 
 constexpr int kMaxPort = 65535;
+constexpr std::size_t kSha256HexDigits = 64;
 
 template <typename T>
 void read_optional(const YAML::Node& root, const char* key, T& out) {
@@ -31,6 +32,11 @@ void validate(const Config& cfg) {
     }
     if (cfg.max_new_tokens_default < 1) {
         throw std::runtime_error("max_new_tokens_default must be at least 1");
+    }
+    if (!cfg.model_sha256.empty() &&
+        (cfg.model_sha256.size() != kSha256HexDigits ||
+         cfg.model_sha256.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos)) {
+        throw std::runtime_error("model_sha256 must be 64 hexadecimal digits");
     }
     if (cfg.enable_tls && (cfg.cert_file.empty() || cfg.key_file.empty())) {
         throw std::runtime_error("enable_tls requires cert_file and key_file");
@@ -67,6 +73,9 @@ Config load_config(const std::string& filename) {
         read_optional(root, "top_p_default", cfg.top_p_default);
         read_optional(root, "max_new_tokens_default", cfg.max_new_tokens_default);
         read_optional(root, "memory_limit_bytes", cfg.memory_limit_bytes);
+        read_optional(root, "model_sha256", cfg.model_sha256);
+        read_optional(root, "sandbox_cgroup", cfg.sandbox_cgroup);
+        read_optional(root, "sandbox_seccomp_log", cfg.sandbox_seccomp_log);
         read_optional(root, "sandbox_enabled", cfg.sandbox_enabled);
         read_optional(root, "use_gpu", cfg.use_gpu);
         read_optional(root, "gpu_layers", cfg.gpu_layers);

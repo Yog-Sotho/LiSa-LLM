@@ -66,7 +66,7 @@ std::string default_model_id(const Config& cfg) {
 
 }  // namespace
 
-HttpServer::HttpServer(InferenceEngine& engine, Config cfg)
+HttpServer::HttpServer(Engine& engine, Config cfg)
     : engine_(engine),
       cfg_(std::move(cfg)),
       model_id_(default_model_id(cfg_)),

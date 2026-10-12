@@ -56,9 +56,14 @@ jobs:
           -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }}
+      - name: Allow unprivileged user namespaces
+        # Ubuntu 24.04's AppArmor blocks them by default; the sandboxed worker needs them.
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Test
         env:
           LISA_TEST_MODEL: ${{ runner.temp }}/stories260K.gguf
+          # Fail rather than skip the sandbox tests if the worker can't be isolated.
+          LISA_REQUIRE_SANDBOX: "1"
         run: ctest --preset ${{ matrix.preset }}
 
   static-analysis:
