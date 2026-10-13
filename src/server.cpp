@@ -564,6 +564,42 @@ void HttpServer::finish_request(const AccessRecord& record) {
     log_info("request", entry);
 }
 
+int health_check(const Config& cfg, std::ostream& out) {
+    // A wildcard bind address is reached through loopback.
+    std::string host = cfg.listen_addr;
+    if (host == "0.0.0.0" || host.empty()) {
+        host = "127.0.0.1";
+    } else if (host == "::") {
+        host = "::1";
+    }
+    constexpr time_t kTimeoutSeconds = 3;
+    httplib::Result res;
+    if (cfg.enable_tls) {
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+        httplib::SSLClient client(host, cfg.listen_port);
+        // Our own server on this machine: its certificate may not name "127.0.0.1".
+        client.enable_server_certificate_verification(false);
+        client.set_connection_timeout(kTimeoutSeconds, 0);
+        client.set_read_timeout(kTimeoutSeconds, 0);
+        res = client.Get("/readyz");
+#else
+        out << "unhealthy: TLS support not built in\n";
+        return 1;
+#endif
+    } else {
+        httplib::Client client(host, cfg.listen_port);
+        client.set_connection_timeout(kTimeoutSeconds, 0);
+        client.set_read_timeout(kTimeoutSeconds, 0);
+        res = client.Get("/readyz");
+    }
+    if (!res) {
+        out << "unhealthy: " << httplib::to_string(res.error()) << '\n';
+        return 1;
+    }
+    out << (res->status == 200 ? "healthy: " : "unhealthy: ") << res->body << '\n';
+    return res->status == 200 ? 0 : 1;
+}
+
 void HttpServer::bind() {
     if (port_ >= 0) {
         return;

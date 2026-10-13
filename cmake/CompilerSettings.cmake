@@ -38,6 +38,11 @@ function(lisa_configure_target target)
         target_link_options(${target} PRIVATE -fsanitize=${LISA_SANITIZERS})
     endif()
 
+    if(LISA_COVERAGE)
+        target_compile_options(${target} PRIVATE --coverage -fprofile-update=atomic)
+        target_link_options(${target} PRIVATE --coverage)
+    endif()
+
     if(LISA_FUZZ)
         # Coverage feedback for libFuzzer in every first-party target.
         target_compile_options(${target} PRIVATE -fsanitize=fuzzer-no-link)

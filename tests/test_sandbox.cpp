@@ -291,7 +291,8 @@ TEST_CASE("sandbox: model SHA-256 is enforced", "[sandbox]") {
     const std::string actual = lisa::ModelFile(model).sha256();
     auto cfg = sandbox_config(model);
     cfg.model_sha256 = actual;
-    CHECK(start_engine(cfg) != nullptr);
+    const auto engine = start_engine(cfg);  // outside CHECK, so its SKIP propagates
+    CHECK(engine != nullptr);
 
     cfg.model_sha256 = std::string(64, '0');
     CHECK_THROWS_WITH(lisa::SandboxedEngine(cfg), Catch::Matchers::ContainsSubstring("mismatch"));
@@ -307,8 +308,12 @@ TEST_CASE("sandbox: startup failures are reported", "[sandbox]") {
     CHECK_THROWS_WITH(lisa::SandboxedEngine(sandbox_config(model), options),
                       Catch::Matchers::ContainsSubstring("cannot start worker"));
 
+    // Fails inside the worker, after lockdown; needs a host where the sandbox works.
+    if (shared_engine() == nullptr) {
+        SKIP("the sandbox can't start here");
+    }
     auto cfg = sandbox_config(model);
-    cfg.chat_template = "no-such-template";  // fails inside the worker, after lockdown
+    cfg.chat_template = "no-such-template";
     CHECK_THROWS_WITH(lisa::SandboxedEngine(cfg, lenient_restarts()),
                       Catch::Matchers::ContainsSubstring("unknown chat_template"));
 }

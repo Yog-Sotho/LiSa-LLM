@@ -14,6 +14,8 @@ option(LISA_HARDENING "Compile with stack protector, FORTIFY_SOURCE, RELRO/now a
 option(LISA_WARNINGS_AS_ERRORS "Treat compiler warnings in first-party code as errors" OFF)
 option(LISA_BUILD_TESTS "Build the unit tests" ${PROJECT_IS_TOP_LEVEL})
 option(LISA_FUZZ "Build the libFuzzer targets in fuzz/ (clang only)" OFF)
+option(LISA_COVERAGE "Instrument first-party code for coverage (gcc/clang --coverage)" OFF)
+option(LISA_PORTABLE "Release binary for other Linux systems: every dependency but glibc linked statically" OFF)
 set(LISA_SANITIZERS "" CACHE STRING "Comma-separated sanitizers for first-party code, e.g. address,undefined")
 
 if(LISA_FUZZ AND NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
@@ -87,13 +89,22 @@ if(LISA_CUDA)
 endif()
 
 if(LISA_SANDBOX)
-    target_link_libraries(lisa_core PRIVATE PkgConfig::LIBSECCOMP)
+    target_link_libraries(lisa_core PRIVATE lisa_seccomp)
     target_compile_definitions(lisa_core PRIVATE LISA_ENABLE_SANDBOX)
 endif()
 
 add_executable(lisa src/main.cpp)
 target_link_libraries(lisa PRIVATE lisa_core)
 lisa_configure_target(lisa)
+if(LISA_PORTABLE)
+    # glibc stays dynamic (static glibc breaks getaddrinfo/NSS); everything else is inside.
+    target_link_options(lisa PRIVATE -static-libstdc++ -static-libgcc)
+endif()
+# A portable x86-64 build targets x86-64-v3 (AVX2, FMA, F16C): check at startup and fail
+# with a clear message rather than SIGILL somewhere in the engine.
+if(NOT LISA_NATIVE AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64" AND GGML_AVX2)
+    target_compile_definitions(lisa PRIVATE LISA_NEEDS_X86_64_V3)
+endif()
 
 install(TARGETS lisa RUNTIME DESTINATION bin)
 

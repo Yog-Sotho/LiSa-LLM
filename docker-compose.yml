@@ -1,0 +1,67 @@
+# docker compose up lisa                     CPU, sandbox off (works with default Docker)
+# docker compose up lisa-sandboxed           CPU, model parsed in the sandboxed worker
+# docker compose --profile gpu up lisa-cuda  NVIDIA GPU (needs the NVIDIA Container Toolkit)
+#
+# Put a GGUF model at ./models/model.gguf and API keys in .env, e.g.
+#   LISA_API_KEYS=sha256:<digest>      (lisa --hash-key; or the key itself, 16+ characters)
+# The server refuses to start on 0.0.0.0 without a strong key.
+
+x-common: &common
+  ports: ["8080:8080"]
+  volumes:
+    - ./models:/models:ro
+  environment:
+    LISA_API_KEYS: ${LISA_API_KEYS:?set LISA_API_KEYS in .env}
+    LISA_API_KEY: ""  # drop the image's placeholder key
+  restart: unless-stopped
+  read_only: true
+  tmpfs: [/tmp]
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+
+services:
+  lisa:
+    <<: *common
+    image: ghcr.io/yog-sotho/lisa-llm:latest
+    build: .
+
+  lisa-sandboxed:
+    <<: *common
+    image: ghcr.io/yog-sotho/lisa-llm:latest
+    build: .
+    environment:
+      LISA_API_KEYS: ${LISA_API_KEYS:?set LISA_API_KEYS in .env}
+      LISA_API_KEY: ""
+      LISA_SANDBOX_ENABLED: "true"
+    # The worker creates user namespaces, which Docker's default seccomp and AppArmor
+    # profiles forbid. These relax only Docker's own profiles: the worker installs a much
+    # stricter seccomp filter and Landlock rules of its own. On Ubuntu 23.10+ hosts also
+    # run: sysctl kernel.apparmor_restrict_unprivileged_userns=0
+    security_opt:
+      - "no-new-privileges:true"
+      - "seccomp=unconfined"
+      - "apparmor=unconfined"
+
+  lisa-cuda:
+    <<: *common
+    image: ghcr.io/yog-sotho/lisa-llm:latest-cuda
+    profiles: [gpu]
+    build:
+      context: .
+      args:
+        BUILD_IMAGE: nvidia/cuda:12.6.3-devel-ubuntu24.04@sha256:392c0df7b577ecae17a17f6ba7f2009c217bb4422f8431c053ae9af61a8c148a
+        RUNTIME_IMAGE: nvidia/cuda:12.6.3-runtime-ubuntu24.04@sha256:92906d87596d638d35015c6353053121bd299d25943b875763321653884ba924
+        LISA_CUDA: "ON"
+    # GPU inference can't be sandboxed (drivers need device nodes and ioctl).
+    environment:
+      LISA_API_KEYS: ${LISA_API_KEYS:?set LISA_API_KEYS in .env}
+      LISA_API_KEY: ""
+      LISA_SANDBOX_ENABLED: "false"
+      LISA_USE_GPU: "true"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

@@ -2,3 +2,6 @@ ignored:
   # Pinning distro package versions breaks on every Ubuntu security update; the base
   # images are pinned instead and rebuilt regularly.
   - DL3008
+  # FROM uses build arguments (CPU or CUDA base) whose defaults are pinned by digest;
+  # hadolint can't see through the argument and reports them as untagged.
+  - DL3006

@@ -39,7 +39,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends $APT_PACKAGES
+        run: |
+          read -ra packages <<< "$APT_PACKAGES"
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends "${packages[@]}"
       - uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
           key: ${{ matrix.compiler.name }}-${{ matrix.preset }}
@@ -66,6 +68,51 @@ jobs:
           LISA_REQUIRE_SANDBOX: "1"
         run: ctest --preset ${{ matrix.preset }}
 
+  coverage:
+    runs-on: ubuntu-24.04
+    env:
+      CC: gcc-13
+      CXX: g++-13
+      # Line coverage of first-party code must stay at or above this.
+      MIN_LINE_COVERAGE: 85
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install dependencies
+        run: |
+          read -ra packages <<< "$APT_PACKAGES"
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends "${packages[@]}"
+          pip install gcovr==8.6
+      - name: Download test model
+        run: |
+          curl -sSfL --retry 3 -o "$RUNNER_TEMP/stories260K.gguf" "$TEST_MODEL_URL"
+          echo "$TEST_MODEL_SHA256  $RUNNER_TEMP/stories260K.gguf" | sha256sum --check
+      - name: Allow unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Build and test with coverage
+        env:
+          LISA_TEST_MODEL: ${{ runner.temp }}/stories260K.gguf
+          LISA_REQUIRE_SANDBOX: "1"
+        run: |
+          cmake --preset coverage -DLISA_NATIVE=OFF
+          cmake --build --preset coverage
+          ctest --preset coverage
+      - name: Coverage report and gate
+        # sandbox.cpp and worker.cpp run only inside the sandboxed worker, which has no
+        # filesystem to write coverage data to. The sandbox tests check their effects from
+        # outside (escape probes, /proc status, root contents) instead.
+        run: |
+          mkdir -p coverage
+          gcovr --root . --object-directory build/coverage --filter 'src/' \
+            --exclude 'src/sandbox\.cpp' --exclude 'src/worker\.cpp' \
+            --exclude-throw-branches --print-summary \
+            --html-details coverage/index.html \
+            --fail-under-line "$MIN_LINE_COVERAGE"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage/
+
   static-analysis:
     runs-on: ubuntu-24.04
     env:
@@ -75,8 +122,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install dependencies
         run: |
+          read -ra packages <<< "$APT_PACKAGES"
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends $APT_PACKAGES clang-tidy-18 clang-format-18 cppcheck
+          sudo apt-get install -y --no-install-recommends "${packages[@]}" clang-tidy-18 clang-format-18 cppcheck
       - name: clang-format
         run: clang-format-18 --dry-run --Werror src/*.cpp src/*.hpp tests/*.cpp tests/*.hpp fuzz/*.cpp
       - name: Configure (compile_commands.json)
@@ -88,6 +136,26 @@ jobs:
           cppcheck --enable=warning,performance,portability,style --std=c++20
           --inline-suppr --error-exitcode=1 --suppress=missingIncludeSystem
           --suppress=unusedFunction -I src -q src tests fuzz
+
+  workflow-lint:
+    runs-on: ubuntu-24.04
+    env:
+      ACTIONLINT_VERSION: 1.7.12
+      ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: actionlint (shellchecks the run steps too)
+        run: |
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -sSfL --retry 3 -o "$RUNNER_TEMP/$archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${archive}"
+          echo "${ACTIONLINT_SHA256}  $RUNNER_TEMP/$archive" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" -color
+      - name: shellcheck
+        run: shellcheck packaging/*.sh
+      - name: SBOM generator
+        run: packaging/sbom.py --version 0.0.0 --arch x86_64 > /dev/null
 
   docker:
     runs-on: ubuntu-24.04
@@ -106,3 +174,35 @@ jobs:
             echo "expected the placeholder api_key to be rejected" >&2
             exit 1
           fi
+      - name: Allow unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Download test model
+        run: |
+          mkdir -p "$RUNNER_TEMP/models"
+          curl -sSfL --retry 3 -o "$RUNNER_TEMP/models/model.gguf" "$TEST_MODEL_URL"
+          echo "$TEST_MODEL_SHA256  $RUNNER_TEMP/models/model.gguf" | sha256sum --check
+      - name: Sandboxed inference inside a locked-down container
+        # As in docker-compose.yml (lisa-sandboxed): read-only root, no capabilities,
+        # no-new-privileges; only Docker's own seccomp/AppArmor profiles are relaxed so
+        # the worker can create its namespaces.
+        run: |
+          key="$(head -c 24 /dev/urandom | base64 | tr -d '/+=')"
+          docker run -d --name lisa -p 18080:8080 \
+            --read-only --tmpfs /tmp --cap-drop ALL \
+            --security-opt no-new-privileges:true \
+            --security-opt seccomp=unconfined --security-opt apparmor=unconfined \
+            -e LISA_SANDBOX_ENABLED=true -e LISA_API_KEY="$key" -e LISA_MAX_CONTEXT=128 \
+            -v "$RUNNER_TEMP/models:/models:ro" lisa-llm:ci
+          for _ in $(seq 1 60); do
+            curl -sf http://127.0.0.1:18080/readyz && break
+            sleep 1
+          done
+          curl -sSf http://127.0.0.1:18080/v1/completions -H "Authorization: Bearer $key" \
+            -H 'Content-Type: application/json' \
+            -d '{"prompt": "Once upon a time", "max_tokens": 8, "temperature": 0}' | tee response.json
+          grep -q '"text_completion"' response.json
+          docker logs lisa 2>&1 | grep -q '"Sandboxed worker ready"'
+          docker exec lisa /usr/local/bin/lisa --config /etc/lisa/config.yaml --health-check
+      - name: Container logs
+        if: always()
+        run: docker logs lisa 2>&1 | tail -50 || true

@@ -9,6 +9,7 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include <future>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <thread>
 
@@ -272,4 +273,23 @@ TEST_CASE("metrics: a streamed request is counted when its stream ends", "[limit
     CHECK_THAT(text, ContainsSubstring(
                          R"(lisa_http_requests_total{route="/v1/completions",code="200"} 1)"));
     CHECK_THAT(text, ContainsSubstring("lisa_completion_tokens_total 2"));
+}
+
+TEST_CASE("health_check reports readiness", "[limits]") {
+    Fixture fx;
+    lisa::Config cfg = base_config();
+    cfg.listen_addr = "0.0.0.0";  // a wildcard address is checked through loopback
+    cfg.listen_port = fx.server().port();
+    std::ostringstream out;
+    CHECK(lisa::health_check(cfg, out) == 0);
+    CHECK_THAT(out.str(), ContainsSubstring("healthy"));
+
+    fx.engine().set_ready(false);
+    std::ostringstream not_ready;
+    CHECK(lisa::health_check(cfg, not_ready) == 1);
+    CHECK_THAT(not_ready.str(), ContainsSubstring("unhealthy"));
+
+    cfg.listen_port = 1;  // nothing listens there
+    std::ostringstream down;
+    CHECK(lisa::health_check(cfg, down) == 1);
 }

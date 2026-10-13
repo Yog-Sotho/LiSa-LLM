@@ -11,6 +11,72 @@
 
 ## Progress log
 
+### 2026-10-12 — P5 complete (releases and project hygiene)
+
+Done:
+- **Portable binaries:** `LISA_PORTABLE` (`portable` preset) links OpenSSL, libseccomp,
+  yaml-cpp, libstdc++ and libgcc statically. Only glibc stays dynamic.
+  - Release builds run in `ubuntu:22.04`, so the binaries need glibc 2.35 or newer.
+    `packaging/build-portable.sh` fails the build if anything else would be loaded at run
+    time.
+  - x86_64 targets x86-64-v3 and checks AVX2, FMA and F16C at startup with a clear error.
+    Before, an older CPU would have hit SIGILL inside the engine.
+  - OpenMP is replaced by ggml's own thread pool. Measured: same throughput within noise,
+    and no seccomp violations.
+  - The archive is reproducible: fixed owner, order and timestamps from the commit.
+- **Licence compliance:** archives and images carry `THIRD-PARTY-NOTICES.md` and the licence
+  texts of everything linked in: MIT (llama.cpp, cpp-httplib, nlohmann/json, yaml-cpp),
+  Apache-2.0 (OpenSSL), LGPL-2.1 (libseccomp, with relinking instructions) and the GCC
+  runtime exception.
+- **SBOMs:** `packaging/sbom.py` writes SPDX 2.3 for the binaries from the dependency pins
+  (tag and verified commit, or URL and SHA-256) plus the package versions of the statically
+  linked system libraries. Generic scanners can't see FetchContent dependencies. The output
+  is validated with spdx-tools. Images get syft SBOMs.
+- **Release workflow** (`.github/workflows/release.yml`, run by pushing a `vX.Y.Z` tag):
+  - Checks that the tag matches the CMake version and that `CHANGELOG.md` has a section for
+    it.
+  - Builds and tests the binaries on native x86_64 and Arm runners.
+  - Builds the multi-arch CPU image (pushed by digest, then merged) and the CUDA image, and
+    publishes them to GHCR.
+  - Signs everything with cosign (keyless) and attaches SLSA build provenance
+    (`attest-build-provenance`) and SBOM attestations.
+  - Creates the GitHub release with notes from the changelog, plus `SHA256SUMS`.
+  - Every action is pinned by commit SHA, and `workflow_dispatch` is a dry run.
+- **Docker:**
+  - Base images pinned by multi-arch digest; OCI labels; licences in
+    `/usr/share/doc/lisa-llm`.
+  - `HEALTHCHECK` through the new `lisa --health-check`, which queries `/readyz`, so the
+    image needs no HTTP client.
+  - CUDA architectures limited to 7.5–9.0.
+  - `docker-compose.yml` services: CPU, sandboxed and GPU. All run with a read-only root,
+    no capabilities and no-new-privileges.
+- **CI:**
+  - A new step runs the sandbox inside a locked-down container (read-only root,
+    `--cap-drop ALL`), sends a completion and runs the health check. This was skipped in P2
+    and is now verified locally with a real Docker daemon.
+  - A coverage gate: line coverage of `src/` must be at least 85 % (now 87.5 %; functions
+    94 %), with the HTML report kept as an artifact. The worker-only `sandbox.cpp` and
+    `worker.cpp` are excluded because the sandbox can't write coverage data; the sandbox
+    tests check them from outside.
+  - actionlint and shellcheck now lint the workflows and packaging scripts.
+- **Project documents:**
+  - New `SECURITY.md` (private reporting through GitHub advisories, scope, verifying
+    releases), `CONTRIBUTING.md` (setup, presets, checks, sandbox change rules, release
+    steps) and `CHANGELOG.md` (Keep a Changelog, `1.0.0`).
+  - The README gains install, verification, support-matrix and architecture sections.
+- **Test fixes found by running the suite where namespaces are blocked:** two sandbox
+  tests failed instead of skipping there: a `SKIP` nested inside `CHECK`, and a test that
+  needed a working sandbox.
+
+Not verified here: the release workflow can only run on GitHub. Its pieces were checked
+locally (packaging in `ubuntu:22.04`, the image build, the container sandbox test,
+actionlint, SPDX validation, action inputs read from each pinned `action.yml`), but the
+first real run (a dry run, then the `v1.0.0` tag) will be the first end-to-end test.
+
+Estimated scores after P5 (self-assessed): Build 9.5, Security 8.5, Concurrency 8.5,
+Principles 8.5, Dependencies 9, Observability 8.5, Lifecycle 9, Quality 9, Dead code 9 →
+**health ≈ 8.8/10, SOTA ≈ 8/10**. An independent re-audit is the next step to confirm it.
+
 ### 2026-10-12 — P4 complete (performance)
 
 Done:

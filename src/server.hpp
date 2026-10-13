@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <ostream>
 #include <string>
 #include <vector>
 
@@ -93,5 +94,10 @@ private:
     std::atomic<bool> draining_{false};
     std::atomic<bool> cancel_generations_{false};
 };
+
+// `lisa --health-check`: asks the server described by `cfg` (on this machine) whether it
+// is ready (GET /readyz). Returns 0 when it answers 200, 1 otherwise. For container
+// health checks, so the image needs no HTTP client. Not usable with mutual TLS.
+[[nodiscard]] int health_check(const Config& cfg, std::ostream& out);
 
 }  // namespace lisa
