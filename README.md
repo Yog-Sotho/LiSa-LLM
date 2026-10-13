@@ -1,441 +1,329 @@
-
 <div align="center">
-  <img src="assets/Logo_LiSa.png" alt="LiSa Logo" width="420" style="margin-bottom: 20px;">
-  <h1>LiSa-LLM – Lightweight, Sandboxed LLM Inference Server</h1>
+  <img src="assets/Logo_LiSa.png" alt="LiSa-LLM" width="560"/>
+
+  <h1>🛡️ LiSa-LLM</h1>
+
   <p><em>“Because your cat‑sized model deserves a lion‑sized sandbox.”</em></p>
-  <p><strong>LiSa-LLM is a small, self-contained C++20 inference server for GGUF models, built on llama.cpp's <code>libllama</code> with optional CUDA offload. It provides streaming Server-Sent Events, API-key authentication and TLS, and parses every model inside a locked-down worker process (namespaces, empty read-only root, Landlock, seccomp), so a malicious GGUF file can't reach your system.</strong></p>
-  <p>
-    <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT">
-    <img src="https://img.shields.io/badge/C++20-ready-blue.svg" alt="C++20 Ready">
-    <img src="https://img.shields.io/badge/GPU-CUDA-green.svg" alt="GPU Required">
-    <a href="https://github.com/sponsors/Yog-Sotho" target="_blank" rel="noopener">
-      <img src="https://img.shields.io/badge/Sponsor❤️-30363D.svg?logo=githubsponsors&logoColor=EA4AAA" alt="Sponsor on GitHub">
-    </a>
-  </p>
+
+  <p><strong>Your own private, OpenAI-compatible model server: fast, tiny, and paranoid in all the right ways.</strong><br>
+  Drop in a GGUF file → get a ChatGPT-style API → sleep well, because the model runs in a padded cell.</p>
+
+  <a href="https://github.com/Yog-Sotho/LiSa-LLM/actions/workflows/ci.yml"><img src="https://github.com/Yog-Sotho/LiSa-LLM/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/Yog-Sotho/LiSa-LLM/actions/workflows/fuzz.yml"><img src="https://github.com/Yog-Sotho/LiSa-LLM/actions/workflows/fuzz.yml/badge.svg" alt="Fuzzing"></a>
+  <a href="https://github.com/Yog-Sotho/LiSa-LLM/releases"><img src="https://img.shields.io/github/v/release/Yog-Sotho/LiSa-LLM?color=a6249a" alt="Release"></a>
+  <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT">
+  <img src="https://img.shields.io/badge/C++-20-blue.svg" alt="C++20">
+  <img src="https://img.shields.io/badge/engine-llama.cpp-1ba4c2.svg" alt="llama.cpp engine">
+  <img src="https://img.shields.io/badge/OpenAI-compatible-8b5cf6.svg" alt="OpenAI-compatible">
+  <img src="https://img.shields.io/badge/sandbox-on_by_default-10b981.svg" alt="Sandbox on by default">
+  <img src="https://img.shields.io/badge/signed-Sigstore_%2B_SLSA-3b82f6.svg" alt="Signed releases">
+  <a href="https://github.com/Yog-Sotho/LiSa-LLM/stargazers"><img src="https://img.shields.io/github/stars/Yog-Sotho/LiSa-LLM.svg" alt="GitHub Stars"></a>
+  <a href="https://github.com/sponsors/Yog-Sotho" target="_blank" rel="noopener"><img src="https://img.shields.io/badge/Sponsor❤️-30363D.svg?logo=githubsponsors&logoColor=EA4AAA" alt="Sponsor on GitHub"></a>
 </div>
 
-## Project status
+---
 
-LiSa-LLM is being rebuilt following the [codebase audit](docs/project/codebase_audit.md).
-**All roadmap phases (P0–P5) are done**: the project builds reproducibly, inference runs on
-[llama.cpp](https://github.com/ggml-org/llama.cpp)'s `libllama`, the API is OpenAI-compatible
-with chat templates, the model runs in an isolated worker process, and the API is hardened
-for exposure (multiple hashed keys, rate limits, a bounded queue, timeouts, mTLS, Prometheus
-metrics, graceful shutdown). CI runs sanitizers, static analysis, end-to-end model and HTTP
-tests, escape attempts against a live worker, and libFuzzer on the request and IPC decoders.
-With continuous batching and a prompt cache it is faster than llama.cpp's own `llama-server`
-under concurrent load, sandbox included (see [Performance](#performance)). Releases ship
-portable binaries and container images with SBOMs, Sigstore signatures and build provenance.
+## 🤔 What is this?
 
-## Features
+You found a cool model on Hugging Face. You want your apps, scripts and agents to talk to it the
+way they talk to ChatGPT. And you'd rather not hand a multi-gigabyte binary blob from a stranger
+the keys to your server.
 
-- 🧠 **Any GGUF model llama.cpp supports** – LLaMA 2/3, Mistral, Qwen, Gemma, Phi and more,
-  every quantisation type; the tokenizer is read from the GGUF file.
-- 🚀 **Continuous batching** – up to `parallel_slots` requests generate together in one
-  batch; new prompts are evaluated alongside running streams, so nobody waits for a long
-  generation to finish.
-- ♻️ **Prompt cache** – a request reuses the longest matching prefix already in any slot
-  (a shared system prompt, the earlier turns of a chat) and only evaluates the rest;
-  reported as `usage.prompt_tokens_details.cached_tokens`.
-- ⚡ **GPU offload** – CUDA build option with configurable layer count (`gpu_layers`);
-  flash attention and quantised (`q8_0`/`q4_0`) KV cache options.
-- 🔌 **OpenAI-compatible API** – `/v1/chat/completions`, `/v1/completions`, `/v1/models`; works
-  with the official OpenAI SDKs. Chat templates come from the GGUF file.
-- 📡 **Real-time streaming** via Server-Sent Events; generation stops when the client disconnects.
-- 🎛️ **Sampling** – temperature, top-p, top-k, min-p, presence/frequency/repeat penalties,
-  seed and stop sequences; JSON mode (`response_format: {"type": "json_object"}`) constrained
-  by a grammar, so the output is always JSON.
-- 🌐 **Ready for exposure** – TLS 1.2+/1.3 with forward-secret AEAD suites, optional mutual
-  TLS, HSTS; multiple API keys stored as SHA-256 digests; per-key rate limits; a bounded
-  first-come-first-served queue (429 + `Retry-After` when full); timeouts; strict request
-  validation and a 1 MiB body limit.
-- 📈 **Operable** – `/healthz`, `/readyz` (for load balancers and Kubernetes), Prometheus
-  `/metrics` (latency, queue wait, time to first token, tokens/s, rejections, worker
-  restarts), JSON access logs with request ids (`X-Request-Id`), graceful drain on SIGTERM.
-- 🧪 **Tested** – unit tests plus end-to-end generation tests against a real model under
-  ASan/UBSan and TSan, TLS/mTLS tests with generated certificates, libFuzzer targets for
-  untrusted input; clang-tidy, cppcheck and CodeQL in CI.
-- 🔒 **Sandboxed inference (on by default)** – the network-facing broker never parses the
-  model. A separate worker does, with no network, no visible files except the model, no other
-  processes, no capabilities, and a seccomp allow-list that kills it on anything else. Crashed
-  workers are logged and restarted. Optional `model_sha256` pinning. See the
-  [threat model](docs/project/threat_model.md).
+**LiSa-LLM** (**Li**ghtweight **Sa**ndboxed LLM server) does exactly that. One small binary, one
+model file, and you get the **OpenAI API** (`/v1/chat/completions`, streaming and all) on your own
+hardware. Every OpenAI SDK and most AI tools work with it unchanged: point them at your server
+and go.
 
-## Install
+The twist: LiSa **never trusts the model file**. GGUF files are parsed by complicated code, and a
+booby-trapped one could exploit it. So the part of LiSa that talks to the network never even opens
+the model. A separate worker process does, after locking itself into a padded cell: no files, no
+network, no other processes, no privileges, and a system-call filter that kills it the moment it
+tries anything funny.
 
-### Release binaries (Linux x86_64 / aarch64)
+And it's **quick**: continuous batching and a prompt cache make it faster than llama.cpp's own
+`llama-server` when several clients talk to it at once, sandbox included.
+
+**What people build with it:**
+
+- 🏠 A private ChatGPT for the family or the team, with no data leaving the house
+- 🤖 A backend for agents, IDE plugins and chat UIs that speak "OpenAI"
+- 🧪 A safe place to try random models from the internet
+- 🏭 A production endpoint behind a load balancer, with keys, rate limits, TLS and Grafana dashboards
+- 🧠 The teacher model for [Brainbrew](https://github.com/Yog-Sotho/Brainbrew), or the server for
+  the models you fine-tuned with [LLM Fine-Tuner](https://github.com/Yog-Sotho/LLM-fine-tuner)
+
+---
+
+## ✨ Why LiSa slaps
+
+- **🔒 Sandboxed by default.** The model runs in a worker with its own namespaces, an empty
+  read-only root, no capabilities, Landlock and a seccomp allow-list. Crashes are logged and the
+  worker restarts. The model never touches the process that faces the network.
+- **🔌 OpenAI-compatible.** Chat and text completions, streaming, JSON mode, `usage` with cached
+  tokens, OpenAI-style errors. Chat templates come straight from the GGUF file (54 built-in formats).
+- **🚀 Continuous batching.** Up to `parallel_slots` requests generate together, and new prompts
+  join the running batch instead of waiting their turn.
+- **♻️ Prompt cache.** A shared system prompt or the earlier turns of a chat are reused, even
+  across slots, instead of being computed again.
+- **🧠 Any GGUF model.** Llama, Mistral, Qwen, Gemma, Phi, DeepSeek and friends, every
+  quantisation, on llama.cpp's battle-tested engine.
+- **🌐 Ready for the real world.** Hashed API keys, per-key rate limits, a fair bounded queue
+  (429 + `Retry-After`), timeouts, TLS 1.3, mutual TLS, HSTS.
+- **📈 Operable.** `/healthz`, `/readyz`, Prometheus `/metrics` (latency, queue wait, time to first
+  token, tokens/s, worker restarts), JSON logs with request ids, graceful drain on SIGTERM.
+- **📦 Zero-fuss installs.** One static binary for Linux x86_64 and arm64, or multi-arch container
+  images, CUDA included.
+- **🔏 Verifiable.** Every release is signed with Sigstore and ships SLSA provenance and SBOMs, so
+  you can prove the binary came from this repo's source.
+- **🧪 Tested like it matters.** 114 tests under AddressSanitizer, UBSan and ThreadSanitizer,
+  real-model end-to-end tests, sandbox escape attempts, a deliberately hostile worker, libFuzzer,
+  clang-tidy, cppcheck, CodeQL and an 85 % coverage gate, on every pull request.
+
+---
+
+## 🖼️ Gallery
+
+<div align="center">
+
+### 🔒 The padded cell
+
+<img src="assets/sandbox.png" alt="The broker faces the network; a locked-down worker is the only process that reads the model" width="800"/>
+
+*The broker talks to the world and never reads the model. The worker reads the model and can't
+talk to the world. A malicious GGUF gets a padded cell, not your server.*
+
+---
+
+### 🚀 Nobody waits in line
+
+<img src="assets/batching.png" alt="Continuous batching: requests share every step; a cached prompt prefix is copied between slots" width="800"/>
+
+*New requests join the running batch the moment a slot frees up, and a prompt prefix that's already
+cached is copied instead of computed again.*
+
+---
+
+### ⚡ Faster than llama-server under load
+
+<img src="assets/benchmark.png" alt="Tokens per second at 1, 2, 4 and 8 concurrent clients: LiSa-LLM ahead of llama-server at every level" width="800"/>
+
+*Same machine, same model, same llama.cpp commit. LiSa runs with the sandbox on and still comes out
+ahead, by up to 31 %.*
+
+</div>
+
+---
+
+## 🚀 Get started in 2 minutes
+
+### 1. Get LiSa
+
+**Linux binary** (x86_64 or aarch64, any distro with glibc 2.35+):
 
 ```bash
-VERSION=1.0.0 ARCH=x86_64   # or aarch64
+VERSION=1.0.0 ARCH=x86_64        # or aarch64
 curl -LO https://github.com/Yog-Sotho/LiSa-LLM/releases/download/v$VERSION/lisa-$VERSION-linux-$ARCH.tar.gz
 tar xzf lisa-$VERSION-linux-$ARCH.tar.gz
-./lisa-$VERSION-linux-$ARCH/bin/lisa --model models/model.gguf
+sudo install -m 755 lisa-$VERSION-linux-$ARCH/bin/lisa /usr/local/bin/
 ```
 
-Every dependency but glibc is linked in; the binaries run on glibc 2.35+ (Ubuntu 22.04,
-Debian 12, Fedora 36, RHEL 10 and newer). The x86_64 build needs AVX2, FMA and F16C
-(Haswell / Excavator, 2013, or newer) and says so at startup otherwise. Verify downloads
-first: [Verifying a release](#verifying-a-release).
-
-### Container images
-
-```bash
-KEY="$(openssl rand -hex 24)"; echo "API key: $KEY"
-docker run --rm -p 8080:8080 -v ./models:/models:ro \
-  -e LISA_API_KEYS="$KEY" -e LISA_API_KEY= \
-  ghcr.io/yog-sotho/lisa-llm:1.0.0          # :1.0.0-cuda for NVIDIA GPUs
-```
-
-`LISA_API_KEY=` clears the image's placeholder key; the model is expected at
-`/models/model.gguf`.
-
-[`docker-compose.yml`](docker-compose.yml) has ready-made services: `lisa` (CPU),
-`lisa-sandboxed` (CPU with the model in the sandboxed worker) and `lisa-cuda` (GPU, profile
-`gpu`). The images are multi-arch (amd64, arm64; CUDA: amd64), run as UID 10001 and have a
-`HEALTHCHECK` on `/readyz`.
-
-### Verifying a release
-
-Archives and images are signed with Sigstore by the release workflow (keyless: the
-certificate names the workflow and tag) and carry SLSA build provenance; SBOMs (SPDX) are
-attached to the release and to the images.
-
-```bash
-VERSION=1.0.0 FILE=lisa-1.0.0-linux-x86_64.tar.gz
-IDENTITY="https://github.com/Yog-Sotho/LiSa-LLM/.github/workflows/release.yml@refs/tags/v$VERSION"
-ISSUER=https://token.actions.githubusercontent.com
-
-# Archive: checksum, signature, provenance
-sha256sum --check --ignore-missing SHA256SUMS
-cosign verify-blob "$FILE" --bundle "$FILE.sigstore.json" \
-  --certificate-identity "$IDENTITY" --certificate-oidc-issuer "$ISSUER"
-gh attestation verify "$FILE" --repo Yog-Sotho/LiSa-LLM
-
-# Image: signature, provenance, SBOM
-cosign verify ghcr.io/yog-sotho/lisa-llm:$VERSION \
-  --certificate-identity "$IDENTITY" --certificate-oidc-issuer "$ISSUER"
-gh attestation verify oci://ghcr.io/yog-sotho/lisa-llm:$VERSION --repo Yog-Sotho/LiSa-LLM
-cosign verify-attestation --type spdxjson ghcr.io/yog-sotho/lisa-llm:$VERSION \
-  --certificate-identity "$IDENTITY" --certificate-oidc-issuer "$ISSUER" > /dev/null
-```
-
-### Support matrix
-
-| | Status |
-|---|---|
-| Linux x86_64 | Release binary (x86-64-v3) and images; developed and benchmarked here |
-| Linux aarch64 | Release binary and image, built and unit-tested by the release workflow on GitHub's Arm runners |
-| Kernel | 5.13+ recommended (Landlock); the sandbox needs unprivileged user namespaces and seccomp |
-| NVIDIA GPUs | CUDA image for compute capability 7.5–9.0 (Turing–Hopper); any GPU when built from source; GPU mode runs without the sandbox |
-| macOS, Windows, BSD | Not supported (the sandbox is Linux-only) |
-
-## Architecture
-
-```
- clients ──HTTPS──▶ broker (lisa)                       worker (lisa --sandbox-worker)
-                    OpenAI API, auth, rate limits,  ◀──▶ libllama, continuous batching,
-                    queue, metrics, TLS                  prompt cache
-                    never parses the model     socket    namespaces, empty read-only
-                    verifies model SHA-256     (JSON     root, Landlock, seccomp,
-                    restarts a dead worker     frames)   no capabilities, rlimits
-```
-
-The broker only ever handles requests; the model file is parsed by the worker, which locks
-itself down before reading it. Details and limits: [threat model](docs/project/threat_model.md).
-Contributors: see [CONTRIBUTING.md](CONTRIBUTING.md); security reports:
-[SECURITY.md](SECURITY.md).
-
-## Build & Run
-
-### Dependencies
-
-- CMake ≥ 3.28 and Ninja (or Make)
-- C++20 compiler (GCC 13+, Clang 18+)
-- yaml-cpp (built from source if not installed)
-- OpenSSL 3 (libcrypto; model SHA-256, and TLS)
-- libseccomp (for the sandbox; `-DLISA_SANDBOX=OFF` to build without)
-- CUDA toolkit (optional, for `-DLISA_CUDA=ON`)
-
-**Ubuntu / Debian:**
-```bash
-sudo apt update
-sudo apt install build-essential cmake ninja-build pkg-config libssl-dev libyaml-cpp-dev libseccomp-dev
-```
-
-**Fedora / RHEL:**
-```bash
-sudo dnf install gcc-c++ cmake ninja-build openssl-devel yaml-cpp-devel libseccomp-devel
-```
-
-**Arch Linux:**
-```bash
-sudo pacman -S base-devel cmake ninja openssl yaml-cpp libseccomp
-```
-
-llama.cpp, cpp-httplib, nlohmann/json and Catch2 are fetched by CMake at configure time,
-pinned to a release tag whose commit (or archive SHA-256) is verified. For offline builds,
-point `FETCHCONTENT_SOURCE_DIR_<NAME>` at local checkouts.
-
-### Compile
-
-```bash
-cmake --preset release          # optimised build (presets: dev, asan-ubsan, tsan, coverage, release, portable, cuda, fuzz)
-cmake --build --preset release
-ctest --preset release          # unit tests; set LISA_TEST_MODEL=/path/to/model.gguf for engine tests
-```
-
-Main CMake options: `LISA_CUDA` (OFF), `LISA_TLS` (ON), `LISA_SANDBOX` (ON), `LISA_NATIVE`
-(ON, tune for the build CPU), `LISA_HARDENING` (ON), `LISA_SANITIZERS` (e.g. `address,undefined`).
-
-### Prepare a model
-
-Download any GGUF model, for example:
+### 2. Get a model
 
 ```bash
 mkdir -p models
 curl -L -o models/model.gguf \
-  https://huggingface.co/TheBloke/Llama-2-7B-Chat-GGUF/resolve/main/llama-2-7b-chat.Q4_K_M.gguf
+  https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf
 ```
 
-Then set `model_path` in `config.yaml`.
-
-### Run
+### 3. Start it
 
 ```bash
-./build/release/lisa --config config.yaml
-# or without a config file:
-./build/release/lisa --model models/model.gguf --port 8080
+export LISA_API_KEYS="$(openssl rand -hex 24)"; echo "Your API key: $LISA_API_KEYS"
+lisa --model models/model.gguf
 ```
 
-| Option | Purpose |
-|---|---|
-| `-c, --config <path>` | YAML config (default: `config.yaml` if present) |
-| `-m, --model <path>` | Model file, overrides `model_path` |
-| `--host <addr>`, `-p, --port <n>` | Listen address and port |
-| `--check-config` | Validate the configuration and the model file (and its SHA-256), then exit |
-| `--hash-key` | Read an API key on stdin and print its `sha256:` entry for `api_keys` |
+Look for `"Sandboxed worker ready"` in the log: the model is loaded, inside the cell. 🎉
 
-Every config key can also be set as an environment variable `LISA_<KEY>`, e.g.
-`LISA_LISTEN_PORT=9000` or `LISA_API_KEYS=key1,key2`. Precedence: command line >
-environment > config file > defaults.
+### Or with Docker
 
-You should see logs like:
-
-```json
-{"level":"info","message":"LiSa-LLM starting","sandbox":true,"timestamp":1791764103710,"version":"1.0.0"}
-{"level":"info","message":"Loading model","path":"./models/model.gguf","sandbox":true,"timestamp":1791764103710}
-{"landlock_abi":7,"level":"info","message":"Sandboxed worker ready","pid":5456,"timestamp":1791764108919}
-{"chat_template":"model (auto-detected)","gpu":false,"level":"info","message":"Model loaded","model":"qwen2 1B Q4_K - Medium","n_ctx":2048,"n_ctx_train":32768,"n_layer":24,"n_params":630167424,"timestamp":1791764108919}
-{"bind":"127.0.0.1:8080","level":"info","message":"Starting server","model":"model","timestamp":1791764108919,"tls":false}
+```bash
+KEY="$(openssl rand -hex 24)"; echo "Your API key: $KEY"
+docker run --rm -p 8080:8080 -v ./models:/models:ro \
+  -e LISA_API_KEYS="$KEY" -e LISA_API_KEY= \
+  ghcr.io/yog-sotho/lisa-llm:1.0.0           # :1.0.0-cuda for NVIDIA GPUs
 ```
 
-`SIGINT`/`SIGTERM` drain the server: new requests get 503, `/readyz` turns 503, running and
-queued requests finish (up to `shutdown_timeout_seconds`, then they are cancelled). A second
-signal stops at once.
+[`docker-compose.yml`](docker-compose.yml) has ready-made CPU, sandboxed and GPU services. Building
+from source, the sandbox in containers and the support matrix: [Installation](docs/installation.md).
 
-### Sandbox requirements
+### 🔏 Verify before you trust
 
-The sandbox needs Linux with **unprivileged user namespaces** (kernel ≥ 5.13 recommended for
-Landlock). If it can't be set up, the server refuses to start rather than run unprotected.
+Release archives and images are signed (Sigstore, keyless) and carry SLSA provenance and SBOMs.
+Checking takes one command each, e.g.
+`gh attestation verify lisa-1.0.0-linux-x86_64.tar.gz --repo Yog-Sotho/LiSa-LLM`.
+All the commands: [Verifying a release](docs/installation.md#verifying-a-release).
 
-- **Ubuntu 23.10+** restricts user namespaces through AppArmor:
-  `sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0` (or an AppArmor profile for `lisa`).
-- **Docker**: add `--security-opt seccomp=unconfined --security-opt apparmor=unconfined`
-  (the worker installs a much stricter seccomp filter of its own) and set
-  `sandbox_enabled: true`; the bundled container config has it off.
-- **GPU offload** can't be sandboxed (drivers need device nodes and `ioctl`): it requires
-  `sandbox_enabled: false`, which logs a warning.
+---
 
-`memory_limit_bytes` caps the worker's heap (weights repacked for the CPU, KV cache, compute
-buffers); raise it for large models. For hard limits, point `sandbox_cgroup` at a delegated
-cgroup v2 directory (e.g. a systemd unit with `Delegate=yes`).
+## 💬 Talk to it
 
-### Use the API
-
-LiSa-LLM speaks the **OpenAI API**, so existing OpenAI clients and SDKs work unchanged:
-
-| Route | Purpose |
-|---|---|
-| `POST /v1/chat/completions` | Chat, formatted with the model's chat template |
-| `POST /v1/completions` | Raw text completion |
-| `GET /v1/models` | The loaded model |
-| `GET /healthz` | Liveness check (no key needed) |
-| `GET /readyz` | Readiness: 503 while draining or when the worker keeps crashing (no key) |
-| `GET /metrics` | Prometheus metrics (needs a key when keys are configured) |
-
-Authenticate with `Authorization: Bearer <api_key>` (or `X-API-Key: <api_key>`). Every response
-carries an `X-Request-Id` (yours if you send a plain one, else a random one) that also appears
-in the server's access log.
-
-When the queue is full (`max_queued_requests`) or a key exceeds `rate_limit_per_minute`, the
-server answers `429` with a `Retry-After` header, which the OpenAI SDKs honour.
+Anything that speaks OpenAI speaks LiSa:
 
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="http://localhost:8080/v1", api_key="changeme")
-reply = client.chat.completions.create(
-    model="llama-2-7b-chat.Q4_K_M",            # any value works; one model is loaded
+client = OpenAI(base_url="http://localhost:8080/v1", api_key="<your key>")
+stream = client.chat.completions.create(
+    model="model",                         # any name: one model is loaded
     messages=[{"role": "user", "content": "Write a haiku about sandboxes."}],
-    max_tokens=100,
     stream=True,
 )
-for chunk in reply:
+for chunk in stream:
     if chunk.choices and chunk.choices[0].delta.content:
         print(chunk.choices[0].delta.content, end="")
 ```
 
 ```bash
 curl http://localhost:8080/v1/chat/completions \
-  -H "Authorization: Bearer changeme" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $LISA_API_KEYS" -H "Content-Type: application/json" \
   -d '{"messages": [{"role": "user", "content": "Hello!"}], "max_tokens": 50}'
 ```
 
-**Supported request fields:** `messages` (roles `system`/`developer`, `user`, `assistant`;
-text content) or `prompt`; `max_tokens` / `max_completion_tokens`; `temperature` (0 = greedy);
-`top_p`; `presence_penalty`; `frequency_penalty`; `seed`; `stop` (up to 4 sequences);
-`stream` and `stream_options.include_usage`; `response_format` `text` or `json_object`.
-llama.cpp extensions: `top_k`, `min_p`, `repeat_penalty`. Responses include `usage` (with
-`prompt_tokens_details.cached_tokens`) and `finish_reason` (`stop` / `length`).
+| Area | Supported |
+|---|---|
+| **Routes** | `/v1/chat/completions`, `/v1/completions`, `/v1/models`, plus `/healthz`, `/readyz`, `/metrics` |
+| **Sampling** | `temperature`, `top_p`, `top_k`, `min_p`, presence/frequency/repeat penalties, `seed`, `stop` |
+| **Output** | streaming (SSE) with optional usage, JSON mode (`response_format: json_object`, grammar-constrained) |
+| **Not (yet)** | tools, `json_schema`, logprobs, `n` > 1, images: refused with a clear `400`, never silently ignored |
 
-Features the server doesn't implement (`n` > 1, `logprobs`, `tools`, `json_schema`
-response formats, `logit_bias`, `echo`, `suffix`) are rejected with `400` rather than silently ignored. Errors
-use OpenAI's format: `{"error": {"message", "type", "param", "code"}}`. Without `max_tokens`,
-generation is limited by `max_new_tokens_default` and the free context.
+Everything else, with examples: [Using the API](docs/api.md).
 
-**Chat templates.** The template stored in the GGUF file is detected automatically (54
-built-in formats: Llama 2/3/4, ChatML, Mistral, Gemma, Phi, DeepSeek, Qwen, Command-R, …). Set
-`chat_template` in the config to force one (e.g. `llama3`, `chatml`); models without a
-template fall back to ChatML. Message content that spells a special token (e.g.
-`<|im_end|>`) is rejected, so users cannot forge role boundaries.
+---
 
-### Docker (from source)
+## ⚡ Performance
 
-```bash
-docker build -t lisa-llm .     # CUDA: see the build args at the top of the Dockerfile
-docker run --rm -p 8080:8080 \
-  -v ./models:/models:ro \
-  -v ./my-config.yaml:/etc/lisa/config.yaml:ro \
-  lisa-llm
-```
+Qwen2.5-0.5B-Instruct Q4_K_M on 4 vCPUs, 64 tokens per request, every prompt distinct. LiSa with
+the **sandbox on** and 8 slots versus `llama-server -np 8` built from the same llama.cpp commit:
 
-The image runs as an unprivileged user and listens on `0.0.0.0` inside the container. It
-refuses to start with the placeholder `api_key`, so mount a config with a strong key. To run
-the sandbox in the container, see [Sandbox requirements](#sandbox-requirements).
+| Concurrent clients | LiSa-LLM | llama-server |
+|---:|---:|---:|
+| 1 | 37.4 tok/s | 35.6 tok/s |
+| 2 | 48.8 tok/s | 42.8 tok/s |
+| 4 | **61.9 tok/s** | 47.2 tok/s |
+| 8 | **66.7 tok/s** | 59.2 tok/s |
+| 8, shared prompt prefix | **90.4 tok/s** | 82.8 tok/s |
 
-## Performance
+Measure your own box with `python3 bench/bench.py --url http://127.0.0.1:8080 --key "$KEY"`.
+Methodology, time-to-first-token numbers, how batching works and how to tune it:
+[Performance](docs/performance.md).
 
-Throughput and time to first token (TTFT) at increasing concurrency, measured with
-[`bench/bench.py`](bench/bench.py) on the same machine and model for both servers:
-Qwen2.5-0.5B-Instruct Q4_K_M, 4 vCPUs (Xeon @ 2.8 GHz, AVX2), 4 threads, 64 tokens per
-request, 8 requests per level, every prompt distinct. LiSa runs **with the sandbox on**, 8
-slots; `llama-server` is built from the same llama.cpp commit with `-np 8`.
+---
 
-| Concurrency | LiSa tok/s | llama-server tok/s | LiSa TTFT p95 | llama-server TTFT p95 |
-|---:|---:|---:|---:|---:|
-| 1 | 37.4 | 35.6 | 0.31 s | 0.36 s |
-| 2 | 48.8 | 42.8 | 0.77 s | 0.77 s |
-| 4 | 61.9 | 47.2 | 1.07 s | 1.41 s |
-| 8 | 66.7 | 59.2 | 2.38 s | 2.56 s |
+## 🔒 Security in one breath
 
-With a long prompt shared by every request (`--shared-prefix`, e.g. a system prompt), the
-prompt cache copies the prefix between slots: 90.4 tok/s and 0.20 s TTFT p95 at
-concurrency 8 (`llama-server`: 82.8 tok/s, 0.12 s). A single request runs at the same speed
-as `llama-server`, so the sandbox costs nothing measurable. Before continuous batching
-(P3), LiSa stayed at about 37 tok/s whatever the concurrency. Expect ±5 % between runs.
+The network-facing **broker** checks keys, rate-limits, queues and validates every request, and
+**never parses the model**. The **worker** parses it inside user, mount, network, PID, IPC, UTS and
+cgroup namespaces, on an empty read-only root, with no capabilities, Landlock and a seccomp
+allow-list. The broker treats the worker as hostile too: a malformed reply gets it killed and
+restarted. If the sandbox can't be set up, LiSa refuses to start rather than run unprotected.
 
-Reproduce with any OpenAI-compatible server:
+Put it on a network the right way: [Security and the sandbox](docs/security.md) has the checklist,
+and the [threat model](docs/project/threat_model.md) has every rule and its limits. Found a hole?
+Please report it privately: [SECURITY.md](SECURITY.md).
 
-```bash
-python3 bench/bench.py --url http://127.0.0.1:8080 --key "$KEY" --concurrency 1,2,4,8
-```
+---
 
-Tuning: `parallel_slots` sets how many requests share a batch (each reserves KV cache for
-`max_context` tokens); `kv_cache_type: q8_0` halves KV memory; keep `n_threads` at or below
-the number of cores.
+## ⚙️ Configuration
 
-## Configuration
+One YAML file ([`config.yaml`](config.yaml), every option commented), `LISA_<KEY>` environment
+variables for each setting, and a few flags (`--model`, `--host`, `--port`, `--check-config`,
+`--health-check`, `--hash-key`). The ones you'll touch first:
 
-See [`config.yaml`](config.yaml) for every option with comments:
+| Setting | Default | What it does |
+|---|---|---|
+| `model_path` | | The GGUF file to serve |
+| `listen_addr` / `listen_port` | `127.0.0.1` / `8080` | Where to listen |
+| `api_keys` | | Keys or `sha256:` digests (`lisa --hash-key`) |
+| `parallel_slots` | `4` | Requests generated together |
+| `max_context` | `2048` | Context window per slot |
+| `rate_limit_per_minute` | `0` (off) | Per-key rate limit |
+| `enable_tls` | `false` | HTTPS (plus `client_ca_file` for mutual TLS) |
+| `sandbox_enabled` | `true` | Run the model in the padded cell |
 
-```yaml
-model_path: "./models/model.gguf"
-model_alias: ""                  # model id in API responses; default: file name
-chat_template: ""                # built-in template name; default: from the GGUF file
+All of them: [Configuration](docs/configuration.md). Deploying with Docker, Kubernetes, systemd,
+TLS or Prometheus: [Deployment](docs/deployment.md).
 
-listen_addr: "127.0.0.1"
-listen_port: 8080
-enable_tls: false
-cert_file: ""
-key_file: ""
-client_ca_file: ""               # require client certificates from this CA (mTLS)
-tls_min_version: "1.2"           # or "1.3"
+---
 
-api_key: "changeme"              # see also api_keys, api_keys_file, LISA_API_KEYS
-api_keys: []                     # keys or "sha256:<hex>" digests (lisa --hash-key)
-api_keys_file: ""                # one key or digest per line
+## 🗺️ What's built, what's coming
 
-max_queued_requests: 16          # more waiting requests get 429
-rate_limit_per_minute: 0         # per key; 0 = unlimited
-rate_limit_burst: 10
-max_prompt_tokens: 0             # 0 = context window only
-read_timeout_seconds: 30
-write_timeout_seconds: 60
-keep_alive_timeout_seconds: 5
-shutdown_timeout_seconds: 30
+**Already available (v1.0.0):**
 
-n_threads: 0                     # 0 = one per available CPU
-parallel_slots: 4                # requests batched together (KV cache: slots × max_context)
-flash_attention: "auto"          # auto | on | off
-kv_cache_type: "f16"             # f16 | q8_0 | q4_0
-max_context: 4096
-temperature_default: 0.8
-top_p_default: 0.95
-max_new_tokens_default: 256
+- ✅ llama.cpp engine: any GGUF model, every quantisation, optional CUDA offload
+- ✅ OpenAI-compatible chat and completions, streaming, JSON mode, 54 chat templates
+- ✅ Sandboxed model parsing, on by default, with crash recovery and model checksum pinning
+- ✅ Continuous batching and a cross-slot prompt cache
+- ✅ Hashed API keys, rate limits, fair queue, timeouts, TLS 1.3, mutual TLS
+- ✅ Health and readiness probes, Prometheus metrics, JSON access logs, graceful drain
+- ✅ Static Linux binaries (x86_64, arm64), multi-arch and CUDA container images
+- ✅ Signed releases with SLSA provenance and SBOMs
 
-model_sha256: ""                 # optional: refuse to start on any other file
+**On the wishlist:**
 
-sandbox_enabled: true            # parse the model only in the isolated worker
-memory_limit_bytes: 4294967296   # worker heap limit, 4 GiB
-sandbox_cgroup: ""               # optional delegated cgroup v2 dir (memory/pids limits)
-sandbox_seccomp_log: false       # diagnose only: log blocked syscalls instead of killing
-use_gpu: true
-gpu_layers: -1                   # -1 = all layers (CUDA builds)
-```
+- ⏳ `json_schema` structured output and tool calling
+- ⏳ Jinja chat templates beyond llama.cpp's 54 built-in formats
+- ⏳ Speculative decoding and multi-GPU split
+- ⏳ Vulkan, ROCm and Metal backends
+- ⏳ A prompt cache that survives restarts
 
-Unknown keys are rejected, so a typo can't silently leave a setting at its default.
+Ideas and pull requests welcome!
 
-## Security notes
+---
 
-- The sandbox is designed to contain a malicious model file; read the
-  [threat model](docs/project/threat_model.md) for what it does and doesn't cover (kernel
-  bugs, CPU exhaustion, the unsandboxed network broker, GPU mode).
-- If you expose the server beyond localhost, enable TLS and use random keys of at least 16
-  characters: off loopback the server refuses the placeholder `changeme` and shorter keys.
-  Prefer `sha256:` entries (`lisa --hash-key`) in `api_keys_file` over plaintext keys.
-- Set `rate_limit_per_minute` and keep `max_queued_requests` small so one client can't
-  monopolise the model; put `/readyz` behind your load balancer's health check.
-- Run the binary under a dedicated, unprivileged user (the Docker image does).
+## 📖 Documentation
 
-## Limitations
+| Guide | What you'll learn |
+|---|---|
+| [Installation](docs/installation.md) | Binaries, containers, building from source, verifying releases |
+| [Quick start](docs/quick-start.md) | Your first answer in 5 minutes, and hooking up your tools |
+| [Using the API](docs/api.md) | Requests, streaming, JSON mode, prompt caching, errors |
+| [Configuration](docs/configuration.md) | Every setting, flag and environment variable |
+| [Deployment](docs/deployment.md) | Docker, Compose, TLS, health checks, Prometheus, systemd |
+| [Security and the sandbox](docs/security.md) | How the sandbox works and how to expose LiSa safely |
+| [Performance](docs/performance.md) | Benchmarks, batching, prompt cache, memory and tuning |
+| [Troubleshooting](docs/troubleshooting.md) | Common errors and their fixes |
+| [FAQ](docs/faq.md) | Quick answers |
 
-- Prompt caching works within the running process (no disk or RAM-tier cache across
-  restarts); speculative decoding and multi-GPU split are not wired up.
-- Chat templates use llama.cpp's 54 built-in formats; arbitrary Jinja templates, tool calls
-  and JSON-schema-constrained output (`json_schema`) are not supported yet (JSON mode is).
-- GPU support is NVIDIA CUDA only for now (llama.cpp's Vulkan/Metal/ROCm backends are not wired up).
+Behind the scenes: the [threat model](docs/project/threat_model.md), and the
+[codebase audit](docs/project/codebase_audit.md) that started the v1.0.0 rebuild, with the
+progress log of every phase.
 
-Contributing
+---
 
-Fork, hack, and open a PR. Keep the humour and the seccomp filters tight.
+## 🤝 Contributing
 
-License
+Fork it, hack it, open a PR, and keep the humour and the seccomp filters tight.
+[CONTRIBUTING.md](CONTRIBUTING.md) explains the build presets, the tests (sanitizers, sandbox,
+fuzzing) and what CI checks.
 
-MIT – because sharing is caring, even when sandboxing.
+Found a bug? [Open an issue](https://github.com/Yog-Sotho/LiSa-LLM/issues) with your OS, kernel
+(`uname -r`), how you run LiSa and the log lines around the error. Security issues go through
+[SECURITY.md](SECURITY.md) instead.
+
+---
+
+## 📜 License
+
+MIT, because sharing is caring, even when sandboxing. Third-party licences are listed in
+[THIRD-PARTY-NOTICES.md](packaging/THIRD-PARTY-NOTICES.md) and ship with every release.
 
 ---
 
 <div align="center">
-  Made with ❤️ by Yog-Sotho<br>
-  <i>“May your logits be low‑entropy and your cgroups never OOM.”</i>
+
+**Made with ❤️ by Yog-Sotho**
+
+*“May your logits be low‑entropy and your cgroups never OOM.”*
+
+*If LiSa keeps your models in line, a ⭐ on GitHub means the world.*
 </div>

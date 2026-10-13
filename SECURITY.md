@@ -47,4 +47,4 @@ by high request volume without rate limits configured.
 
 Release archives and container images are signed with Sigstore (keyless, tied to this
 repository's release workflow) and carry SLSA build provenance and an SPDX SBOM. See
-[Verifying a release](README.md#verifying-a-release).
+[Verifying a release](docs/installation.md#verifying-a-release).

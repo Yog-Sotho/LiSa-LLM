@@ -26,7 +26,8 @@ api_key: "changeme"
 api_keys: []
 api_keys_file: ""
 
-# Admission control. The model serves one request at a time, in arrival order.
+# Admission control. Up to parallel_slots requests generate at once; the next ones wait in
+# arrival order, up to max_queued_requests.
 max_queued_requests: 16      # waiting requests; more get 429 with Retry-After
 rate_limit_per_minute: 0     # per API key (per address without auth); 0 = unlimited
 rate_limit_burst: 10         # requests a key may send at once
