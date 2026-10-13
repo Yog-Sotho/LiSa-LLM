@@ -6,7 +6,7 @@ Thanks for helping. Bug reports, fixes and features are welcome; for security is
 ## Set up
 
 Linux with GCC 13+ or Clang 18+, CMake 3.28+, Ninja, OpenSSL 3, libseccomp and yaml-cpp
-(see the README for package names). llama.cpp, cpp-httplib, nlohmann/json and Catch2 are
+(package names per distribution: [Installation](docs/installation.md#build-from-source)). llama.cpp, cpp-httplib, nlohmann/json and Catch2 are
 fetched by CMake, pinned by tag and verified commit.
 
 ```bash

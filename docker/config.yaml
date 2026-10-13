@@ -1,6 +1,7 @@
 # Container defaults. Mount your model at /models/model.gguf and override this file
-# (-v ./my-config.yaml:/etc/lisa/config.yaml:ro) with a strong api_key: the server
-# refuses to start on 0.0.0.0 with the placeholder key.
+# (-v ./my-config.yaml:/etc/lisa/config.yaml:ro) with a strong api_key, or pass keys as
+# LISA_API_KEYS=... and clear this one with LISA_API_KEY=: the server refuses to start on
+# 0.0.0.0 with the placeholder key.
 model_path: "/models/model.gguf"
 
 listen_addr: "0.0.0.0"

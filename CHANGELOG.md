@@ -36,6 +36,9 @@ remains.
 - **Distribution**: portable Linux binaries (x86-64-v3 and arm64; every dependency but glibc
   linked in), multi-arch CPU and CUDA container images, SPDX SBOMs, Sigstore signatures and
   SLSA provenance for every artifact.
+- **Documentation**: a user guide in `docs/` (installation, quick start, API, configuration,
+  deployment, security, performance, troubleshooting, FAQ) with illustrations of the sandbox,
+  continuous batching and the benchmark.
 - **Quality**: unit, end-to-end, TLS, sandbox-escape and hostile-worker tests under
   ASan/UBSan and TSan; libFuzzer targets for the request and worker-reply decoders;
   clang-tidy, cppcheck, CodeQL and a coverage gate in CI.

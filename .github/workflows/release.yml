@@ -305,7 +305,7 @@ jobs:
           {
             awk -v v="## [${VERSION}]" 'index($0, v) == 1 {found = 1; next} /^## \[/ {found = 0} found' CHANGELOG.md
             echo
-            echo "Verify downloads and images as described in [Verifying a release](https://github.com/${GITHUB_REPOSITORY}/blob/v${VERSION}/README.md#verifying-a-release)."
+            echo "Verify downloads and images as described in [Verifying a release](https://github.com/${GITHUB_REPOSITORY}/blob/v${VERSION}/docs/installation.md#verifying-a-release)."
           } > notes.md
           gh release create "v${VERSION}" --verify-tag --title "LiSa-LLM ${VERSION}" \
             --notes-file notes.md dist/*
