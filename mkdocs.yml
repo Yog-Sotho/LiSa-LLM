@@ -1,0 +1,59 @@
+site_name: LiSa-LLM
+site_description: Your own private, OpenAI-compatible model server for GGUF models, with the model sandboxed in a locked-down worker.
+site_url: https://yog-sotho.github.io/LiSa-LLM/
+repo_url: https://github.com/Yog-Sotho/LiSa-LLM
+edit_uri: edit/main/docs/
+strict: true
+# The logo is only used by the README (too heavy to ship on every page).
+exclude_docs: |
+  assets/Logo_LiSa.png
+
+theme:
+  name: material
+  icon:
+    logo: material/shield-lock
+  features:
+    - content.code.copy
+    - navigation.sections
+    - navigation.top
+    - search.highlight
+  palette:
+    - scheme: slate
+      primary: deep purple
+      accent: purple
+      toggle: {icon: material/brightness-4, name: Light mode}
+    - scheme: default
+      primary: deep purple
+      accent: purple
+      toggle: {icon: material/brightness-7, name: Dark mode}
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      # GitHub-style anchors, so in-page links work the same on GitHub and on the site.
+      slugify: !!python/object/apply:pymdownx.slugs.slugify {kwds: {case: lower}}
+  - pymdownx.highlight
+  - pymdownx.superfences
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - Installation: installation.md
+      - Quick start: quick-start.md
+  - Using LiSa:
+      - Using the API: api.md
+      - Configuration: configuration.md
+      - Deployment: deployment.md
+  - Security and performance:
+      - Security and the sandbox: security.md
+      - Performance: performance.md
+  - Reference:
+      - Troubleshooting: troubleshooting.md
+      - FAQ: faq.md
+  - Project:
+      - Threat model: project/threat_model.md
+      - Codebase audit: project/codebase_audit.md

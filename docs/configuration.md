@@ -8,7 +8,7 @@ first one in this list wins:
 3. **A YAML file**: `--config path.yaml`, or `config.yaml` in the current folder if there is one
 4. Built-in defaults
 
-The sample [`config.yaml`](../config.yaml) lists every key with a comment. Unknown keys are an
+The sample [`config.yaml`](https://github.com/Yog-Sotho/LiSa-LLM/blob/main/config.yaml) lists every key with a comment. Unknown keys are an
 error, so a typo can't quietly leave a setting at its default. Check a configuration without
 starting the server:
 
@@ -139,7 +139,7 @@ LISA_PARALLEL_SLOTS=8
 LISA_SANDBOX_ENABLED=true
 ```
 
-This is how the container images and [`docker-compose.yml`](../docker-compose.yml) are configured.
+This is how the container images and [`docker-compose.yml`](https://github.com/Yog-Sotho/LiSa-LLM/blob/main/docker-compose.yml) are configured.
 An empty value (`LISA_API_KEY=`) sets the key to empty, which is how you clear the image's
 placeholder key.
 

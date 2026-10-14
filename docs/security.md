@@ -4,7 +4,7 @@ LiSa-LLM's whole reason to exist is to run models you didn't build, on a network
 control, without betting your machine on either. This page explains how, in plain language. The
 precise version, with every rule and its limits, is the [threat model](project/threat_model.md).
 
-![The broker and the sandboxed worker](../assets/sandbox.png)
+![The broker and the sandboxed worker](assets/sandbox.png)
 
 ---
 
@@ -116,5 +116,5 @@ provenance and ship SPDX SBOMs. How to check: [Installation → Verifying a rele
 
 Please don't open a public issue. Use GitHub's private
 [**Report a vulnerability**](https://github.com/Yog-Sotho/LiSa-LLM/security/advisories/new) form;
-[SECURITY.md](../SECURITY.md) has the scope and what to expect. A malicious GGUF that escapes the
+[SECURITY.md](https://github.com/Yog-Sotho/LiSa-LLM/blob/main/SECURITY.md) has the scope and what to expect. A malicious GGUF that escapes the
 sandbox is exactly the kind of report we want.

@@ -69,4 +69,4 @@ end up open to the internet. Use `openssl rand -hex 24`.
 ### How do I report a security problem?
 
 Privately, through GitHub's [Report a vulnerability](https://github.com/Yog-Sotho/LiSa-LLM/security/advisories/new)
-form. See [SECURITY.md](../SECURITY.md).
+form. See [SECURITY.md](https://github.com/Yog-Sotho/LiSa-LLM/blob/main/SECURITY.md).

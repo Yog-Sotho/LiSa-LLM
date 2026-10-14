@@ -59,7 +59,7 @@ with the sandbox off: only serve models you trust there, and pin them with `mode
 
 ## Docker Compose
 
-[`docker-compose.yml`](../docker-compose.yml) has three ready-made services, all with a read-only
+[`docker-compose.yml`](https://github.com/Yog-Sotho/LiSa-LLM/blob/main/docker-compose.yml) has three ready-made services, all with a read-only
 root, no capabilities and `no-new-privileges`:
 
 ```bash

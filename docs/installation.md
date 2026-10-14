@@ -117,7 +117,7 @@ ctest --preset release            # optional: the unit tests
 | `release` | Optimised build tuned for this machine's CPU |
 | `portable` | The release-archive build: static dependencies, runs on other machines |
 | `cuda` | NVIDIA GPU offload (needs the CUDA toolkit) |
-| `dev`, `asan-ubsan`, `tsan`, `coverage`, `fuzz` | For contributors: see [CONTRIBUTING.md](../CONTRIBUTING.md) |
+| `dev`, `asan-ubsan`, `tsan`, `coverage`, `fuzz` | For contributors: see [CONTRIBUTING.md](https://github.com/Yog-Sotho/LiSa-LLM/blob/main/CONTRIBUTING.md) |
 
 Main CMake options:
 
@@ -141,7 +141,7 @@ docker build -t lisa-llm:cuda \
   --build-arg LISA_CUDA=ON .                                 # GPU
 ```
 
-The `lisa-cuda` service in [`docker-compose.yml`](../docker-compose.yml) has the same build
+The `lisa-cuda` service in [`docker-compose.yml`](https://github.com/Yog-Sotho/LiSa-LLM/blob/main/docker-compose.yml) has the same build
 arguments, with the base images pinned by digest.
 
 ---

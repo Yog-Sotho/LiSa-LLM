@@ -20,7 +20,7 @@
 - Every command, error message, default and metric in the guide was checked against the code
   or a running server (quick start end to end with Qwen2.5-0.5B, sandbox on; TLS and health
   checks; streaming, JSON mode, 413 and access-log output).
-- Three illustrations in `assets/`: the broker/worker sandbox, continuous batching with the
+- Three illustrations in `docs/assets/`: the broker/worker sandbox, continuous batching with the
   prompt cache, and the benchmark chart (palette checked for colour-vision deficiencies).
 - Stale text fixed: `config.yaml` still said the model serves one request at a time (untrue
   since P4); release notes and `SECURITY.md` now link to the verification guide.
