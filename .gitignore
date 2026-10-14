@@ -20,3 +20,6 @@ __pycache__/
 
 # Release packaging output (packaging/build-portable.sh)
 /dist/
+
+# MkDocs output
+/site/

@@ -8,9 +8,9 @@ sandbox doesn't cost anything you can measure.
 
 ## Benchmarks
 
-![Throughput of LiSa-LLM and llama-server at 1 to 8 concurrent clients](../assets/benchmark.png)
+![Throughput of LiSa-LLM and llama-server at 1 to 8 concurrent clients](assets/benchmark.png)
 
-Measured with [`bench/bench.py`](../bench/bench.py) on the same machine and model for both servers:
+Measured with [`bench/bench.py`](https://github.com/Yog-Sotho/LiSa-LLM/blob/main/bench/bench.py) on the same machine and model for both servers:
 Qwen2.5-0.5B-Instruct Q4_K_M, 4 vCPUs (Xeon @ 2.8 GHz, AVX2), 4 threads, 64 tokens per request,
 8 requests per level, every prompt distinct. LiSa runs **with the sandbox on** and 8 slots;
 `llama-server` is built from the same llama.cpp commit and runs with `-np 8`.
@@ -42,7 +42,7 @@ python3 bench/bench.py --url http://127.0.0.1:8080 --key "$KEY" --concurrency 8 
 
 ## How it gets there
 
-![Continuous batching and the prompt cache](../assets/batching.png)
+![Continuous batching and the prompt cache](assets/batching.png)
 
 **Continuous batching.** The server has `parallel_slots` slots, each with its own slice of the
 KV cache (the model's memory of the conversation so far). Every step evaluates **one batch** that

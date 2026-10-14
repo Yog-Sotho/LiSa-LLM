@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assets/Logo_LiSa.png" alt="LiSa-LLM" width="560"/>
+  <img src="docs/assets/Logo_LiSa.png" alt="LiSa-LLM" width="560"/>
 
   <h1>🛡️ LiSa-LLM</h1>
 
@@ -87,7 +87,7 @@ And it's **quick**: continuous batching and a prompt cache make it faster than l
 
 ### 🔒 The padded cell
 
-<img src="assets/sandbox.png" alt="The broker faces the network; a locked-down worker is the only process that reads the model" width="800"/>
+<img src="docs/assets/sandbox.png" alt="The broker faces the network; a locked-down worker is the only process that reads the model" width="800"/>
 
 *The broker talks to the world and never reads the model. The worker reads the model and can't
 talk to the world. A malicious GGUF gets a padded cell, not your server.*
@@ -96,7 +96,7 @@ talk to the world. A malicious GGUF gets a padded cell, not your server.*
 
 ### 🚀 Nobody waits in line
 
-<img src="assets/batching.png" alt="Continuous batching: requests share every step; a cached prompt prefix is copied between slots" width="800"/>
+<img src="docs/assets/batching.png" alt="Continuous batching: requests share every step; a cached prompt prefix is copied between slots" width="800"/>
 
 *New requests join the running batch the moment a slot frees up, and a prompt prefix that's already
 cached is copied instead of computed again.*
@@ -105,7 +105,7 @@ cached is copied instead of computed again.*
 
 ### ⚡ Faster than llama-server under load
 
-<img src="assets/benchmark.png" alt="Tokens per second at 1, 2, 4 and 8 concurrent clients: LiSa-LLM ahead of llama-server at every level" width="800"/>
+<img src="docs/assets/benchmark.png" alt="Tokens per second at 1, 2, 4 and 8 concurrent clients: LiSa-LLM ahead of llama-server at every level" width="800"/>
 
 *Same machine, same model, same llama.cpp commit. LiSa runs with the sandbox on and still comes out
 ahead, by up to 31 %.*
@@ -281,6 +281,8 @@ Ideas and pull requests welcome!
 ---
 
 ## 📖 Documentation
+
+Read the docs as a website at **[yog-sotho.github.io/LiSa-LLM](https://yog-sotho.github.io/LiSa-LLM/)**, or right here:
 
 | Guide | What you'll learn |
 |---|---|

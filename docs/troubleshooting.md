@@ -180,4 +180,4 @@ format (`llama3`, `mistral-v7`, `gemma`, …).
 Still stuck? [Open an issue](https://github.com/Yog-Sotho/LiSa-LLM/issues) with your OS and kernel
 version (`uname -r`), how you run it (binary, Docker, flags), your config with keys removed, and
 the log lines around the error. For anything that smells like a security problem, use the private
-form in [SECURITY.md](../SECURITY.md) instead.
+form in [SECURITY.md](https://github.com/Yog-Sotho/LiSa-LLM/blob/main/SECURITY.md) instead.

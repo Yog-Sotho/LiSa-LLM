@@ -54,9 +54,9 @@ For contributors and the curious:
 |---|---|
 | [Threat model](project/threat_model.md) | The attackers the design assumes, every defence layer, known limits |
 | [Codebase audit](project/codebase_audit.md) | The audit that started the rebuild, and the progress log of every phase |
-| [CONTRIBUTING.md](../CONTRIBUTING.md) | Building, testing, fuzzing, style, releasing |
-| [SECURITY.md](../SECURITY.md) | How to report a vulnerability privately |
-| [CHANGELOG.md](../CHANGELOG.md) | What changed in each release |
+| [CONTRIBUTING.md](https://github.com/Yog-Sotho/LiSa-LLM/blob/main/CONTRIBUTING.md) | Building, testing, fuzzing, style, releasing |
+| [SECURITY.md](https://github.com/Yog-Sotho/LiSa-LLM/blob/main/SECURITY.md) | How to report a vulnerability privately |
+| [CHANGELOG.md](https://github.com/Yog-Sotho/LiSa-LLM/blob/main/CHANGELOG.md) | What changed in each release |
 
 ---
 
