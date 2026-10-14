@@ -1,0 +1,32 @@
+# Weekly update pull requests, grouped so each ecosystem opens at most a couple.
+# Security updates (Dependabot alerts) are separate and open as soon as an advisory lands.
+version: 2
+updates:
+  # Workflow actions are pinned by commit SHA; Dependabot bumps the SHA and the
+  # version comment together.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # requirements-docs.txt (MkDocs + Material, pinned).
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      docs:
+        patterns: ["*"]
+    ignore:
+      # MkDocs 2 drops the plugin and theme system Material for MkDocs needs.
+      - dependency-name: mkdocs
+        versions: [">=2"]
+
+# Not covered: the Dockerfile picks its base images through build arguments
+# (FROM ${BUILD_IMAGE}), which Dependabot does not resolve, and llama.cpp and the
+# other C++ libraries are pinned in cmake/Dependencies.cmake. Bump those by hand.
