@@ -114,7 +114,7 @@ ctest --preset release            # optional: the unit tests
 
 | Preset | What you get |
 |---|---|
-| `release` | Optimised build tuned for this machine's CPU |
+| `release` | Optimised build with portable CPU flags (x86-64-v3); add `-DLISA_NATIVE=ON` to tune for this machine |
 | `portable` | The release-archive build: static dependencies, runs on other machines |
 | `cuda` | NVIDIA GPU offload (needs the CUDA toolkit) |
 | `dev`, `asan-ubsan`, `tsan`, `coverage`, `fuzz` | For contributors: see [CONTRIBUTING.md](https://github.com/Yog-Sotho/LiSa-LLM/blob/main/CONTRIBUTING.md) |

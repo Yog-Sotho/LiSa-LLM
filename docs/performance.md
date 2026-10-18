@@ -100,7 +100,7 @@ examples at `f16`:
 | Llama-2-7B | ≈ 512 KiB | ≈ 8 GiB |
 
 `q8_0` halves the KV column, `q4_0` quarters it. The log line `"Model loaded"` shows the context
-size actually used (`n_ctx`, padded to 256 tokens per slot).
+size each slot actually gets (`n_ctx`: `max_context`, capped at the model's training context).
 
 With the sandbox on, all of this lives in the worker, so `memory_limit_bytes` (default 4 GiB)
 must cover it. If the worker dies right after loading and the log mentions an allocation failure,

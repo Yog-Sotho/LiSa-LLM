@@ -18,7 +18,8 @@ client_ca_file: ""           # set to require client certificates signed by this
 tls_min_version: "1.2"       # or "1.3"; TLS 1.2 uses forward-secret AEAD suites only
 
 # Clients send a key as "Authorization: Bearer <key>" or "X-API-Key: <key>". Keys can come
-# from api_key, api_keys, api_keys_file (one per line) and LISA_API_KEYS (comma-separated).
+# from api_key, api_keys and api_keys_file (one per line); LISA_API_KEYS (comma-separated)
+# replaces the api_keys list.
 # An entry may be "sha256:<hex>" instead of the key itself (create one with
 # `lisa --hash-key`), so key files need not hold the keys. No key at all disables
 # authentication. Off loopback, the server refuses "changeme" and keys under 16 characters.
