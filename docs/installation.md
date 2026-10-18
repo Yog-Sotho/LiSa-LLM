@@ -17,7 +17,7 @@ Then grab a model ([Getting a model](#getting-a-model)) and head to the [quick s
 Every release ships a ready-to-run archive for Linux **x86_64** and **aarch64** (64-bit Arm):
 
 ```bash
-VERSION=1.0.0 ARCH=x86_64        # or aarch64
+VERSION=1.0.1 ARCH=x86_64        # or aarch64
 curl -LO https://github.com/Yog-Sotho/LiSa-LLM/releases/download/v$VERSION/lisa-$VERSION-linux-$ARCH.tar.gz
 tar xzf lisa-$VERSION-linux-$ARCH.tar.gz
 ./lisa-$VERSION-linux-$ARCH/bin/lisa --version
@@ -49,14 +49,14 @@ Images live on the GitHub Container Registry:
 
 | Image | Platforms | What it runs |
 |---|---|---|
-| `ghcr.io/yog-sotho/lisa-llm:1.0.0` (also `:latest`) | linux/amd64, linux/arm64 | CPU inference |
-| `ghcr.io/yog-sotho/lisa-llm:1.0.0-cuda` (also `:latest-cuda`) | linux/amd64 | NVIDIA GPUs, compute capability 7.5–9.0 (Turing to Hopper) |
+| `ghcr.io/yog-sotho/lisa-llm:1.0.1` (also `:latest`) | linux/amd64, linux/arm64 | CPU inference |
+| `ghcr.io/yog-sotho/lisa-llm:1.0.1-cuda` (also `:latest-cuda`) | linux/amd64 | NVIDIA GPUs, compute capability 7.5–9.0 (Turing to Hopper) |
 
 ```bash
 KEY="$(openssl rand -hex 24)"; echo "Your API key: $KEY"
 docker run --rm -p 8080:8080 -v ./models:/models:ro \
   -e LISA_API_KEYS="$KEY" -e LISA_API_KEY= \
-  ghcr.io/yog-sotho/lisa-llm:1.0.0
+  ghcr.io/yog-sotho/lisa-llm:1.0.1
 ```
 
 - The model is expected at `/models/model.gguf` (mount a folder that has one, or set
@@ -184,7 +184,7 @@ You need [cosign](https://docs.sigstore.dev/cosign/system_config/installation/) 
 provenance checks, the [GitHub CLI](https://cli.github.com/).
 
 ```bash
-VERSION=1.0.0 FILE=lisa-1.0.0-linux-x86_64.tar.gz
+VERSION=1.0.1 FILE=lisa-1.0.1-linux-x86_64.tar.gz
 IDENTITY="https://github.com/Yog-Sotho/LiSa-LLM/.github/workflows/release.yml@refs/tags/v$VERSION"
 ISSUER=https://token.actions.githubusercontent.com
 

@@ -6,6 +6,29 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.1]
+
+No change to the server. The documentation and sample configuration shipped in the release
+archives and images are corrected.
+
+### Added
+
+- The documentation is published at <https://yog-sotho.github.io/LiSa-LLM/> (MkDocs,
+  strict build on every pull request that touches it).
+- Dependabot version updates for the workflow actions and the docs requirements.
+
+### Fixed
+
+- Documentation statements that disagreed with the code:
+  - the `release` preset is portable (x86-64-v3): CPUs without AVX2 need
+    `-DLISA_NATIVE=ON`;
+  - `LISA_API_KEYS` replaces the `api_keys` list (also in `config.yaml`'s comment);
+  - unknown `LISA_*` environment variables are ignored, not rejected;
+  - `lisa_generations_total` has no `reason` label;
+  - key files should be `chmod 600`;
+  - after repeated worker crashes, requests fail only for the one-minute restart window;
+  - the logged `n_ctx` is `max_context` capped at the training context.
+
 ## [1.0.0]
 
 First tagged release. The code base was rebuilt following the
@@ -49,4 +72,5 @@ remains.
   `pivot_root`, wrong namespace order) and the custom GGUF parser had out-of-bounds reads on
   untrusted input; both are gone. See the audit report for the full list.
 
+[1.0.1]: https://github.com/Yog-Sotho/LiSa-LLM/releases/tag/v1.0.1
 [1.0.0]: https://github.com/Yog-Sotho/LiSa-LLM/releases/tag/v1.0.0
