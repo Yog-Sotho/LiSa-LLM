@@ -51,13 +51,14 @@ always listens on `0.0.0.0`, so this applies there too.
 ```
 
 A typo, or a key from another server. **Fix:** compare with the [settings list](configuration.md#every-setting).
-Environment variables are checked the same way, so `LISA_MAX_CTX` fails too.
+Unknown `LISA_*` environment variables are ignored, not rejected, so check their spelling too.
 
 ### ❌ This build needs an x86-64 CPU with AVX2, FMA and F16C
 
 The release binary targets CPUs from 2013 on (Intel Haswell, AMD Excavator). **Fix:**
-[build from source](installation.md#build-from-source) on that machine (`cmake --preset release`
-tunes for the CPU it runs on).
+[build from source](installation.md#build-from-source) on that machine with
+`cmake --preset release -DLISA_NATIVE=ON`, which tunes for the CPU it runs on (the plain
+`release` preset uses the same portable x86-64-v3 flags as the release binary).
 
 ### ❌ Sandboxed worker failed to start
 
@@ -123,8 +124,8 @@ a known-good model and a normal platform this shouldn't happen, so treat it as s
 exactly what a model exploit attempt looks like. If you trust the model, run once with
 `sandbox_seccomp_log: true` to log the call instead of killing (the kernel's audit log shows it),
 and [report it](https://github.com/Yog-Sotho/LiSa-LLM/issues) with your platform details. After
-repeated crashes LiSa stops restarting the worker, `/readyz` turns `503` and requests fail with
-`500` until you restart the server.
+repeated crashes (more than 3 in a minute) LiSa stops restarting the worker: `/readyz` turns
+`503` and requests fail with `500` until the minute is up, then the next request restarts it.
 
 ### ❌ 429 Too Many Requests
 

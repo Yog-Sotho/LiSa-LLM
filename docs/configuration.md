@@ -1,7 +1,7 @@
 # ⚙️ Configuration
 
-LiSa-LLM reads its settings from three places. When the same setting is in more than one, the
-first one in this list wins:
+LiSa-LLM reads its settings from three places, on top of built-in defaults. When the same setting
+is in more than one, the first one in this list wins:
 
 1. **The command line**: `--model`, `--host`, `--port`
 2. **Environment variables**: `LISA_<KEY>` for every key below, e.g. `LISA_LISTEN_PORT=9000`
@@ -64,7 +64,8 @@ lisa --config config.yaml --check-config     # prints "configuration OK", or wha
 | `api_keys` | `[]` | A list of keys |
 | `api_keys_file` | empty | A file with one key per line (`#` comments and blank lines are ignored) |
 
-All of these add up, together with `LISA_API_KEYS` (comma-separated). Clients may use any of the
+`api_key`, `api_keys` and `api_keys_file` add up. `LISA_API_KEYS` (comma-separated) replaces the
+`api_keys` list from the file, like any other environment variable. Clients may use any of the
 keys. With no key anywhere, authentication is off (fine on localhost; warned about elsewhere).
 
 **Don't store keys in plain text.** Any entry can be the key's SHA-256 digest instead, written as

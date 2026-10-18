@@ -168,7 +168,7 @@ scrape_configs:
 | `lisa_generation_tokens_per_second` | histogram | Generation speed per request |
 | `lisa_prompt_tokens_total`, `lisa_completion_tokens_total` | counter | Tokens in and out |
 | `lisa_prompt_cached_tokens_total` | counter | Prompt tokens served from the prompt cache |
-| `lisa_generations_total{reason}` | counter | Finished generations by stop reason |
+| `lisa_generations_total` | counter | Completed generations |
 | `lisa_requests_rejected_total{reason}` | counter | 429s and other refusals, by reason |
 | `lisa_worker_deaths_total`, `lisa_worker_restarts_total` | counter | Crashed or killed inference workers |
 | `lisa_build_info{version}` | gauge | The running version |
@@ -220,7 +220,8 @@ sudo systemctl daemon-reload && sudo systemctl enable --now lisa
 journalctl -u lisa -f -o cat
 ```
 
-Keep the configuration and key files readable only by `lisa` (`chmod 640`). If you add more
+Keep the configuration and key files readable only by `lisa` (`chmod 600`; LiSa warns about a
+plaintext key file that group or others can read). If you add more
 systemd sandboxing, leave user namespaces allowed (no `RestrictNamespaces=` or `PrivateUsers=`):
 LiSa's own sandbox needs them. For hard memory limits, add `Delegate=yes` and point
 `sandbox_cgroup` at the delegated cgroup folder.
