@@ -9,7 +9,7 @@ and skip to [step 4](#4-ask-it-something).
 ## 1. Download LiSa-LLM
 
 ```bash
-VERSION=1.0.0 ARCH=x86_64        # or aarch64
+VERSION=1.0.1 ARCH=x86_64        # or aarch64
 curl -LO https://github.com/Yog-Sotho/LiSa-LLM/releases/download/v$VERSION/lisa-$VERSION-linux-$ARCH.tar.gz
 tar xzf lisa-$VERSION-linux-$ARCH.tar.gz
 sudo install -m 755 lisa-$VERSION-linux-$ARCH/bin/lisa /usr/local/bin/

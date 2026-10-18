@@ -13,7 +13,7 @@ docker run -d --name lisa -p 8080:8080 \
   -v ./models:/models:ro \
   -e LISA_API_KEYS="$KEY" -e LISA_API_KEY= \
   --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges \
-  ghcr.io/yog-sotho/lisa-llm:1.0.0
+  ghcr.io/yog-sotho/lisa-llm:1.0.1
 ```
 
 - The image expects the model at `/models/model.gguf` and reads `/etc/lisa/config.yaml`; mount
@@ -35,7 +35,7 @@ docker run -d --name lisa -p 8080:8080 -v ./models:/models:ro \
   -e LISA_API_KEYS="$KEY" -e LISA_API_KEY= -e LISA_SANDBOX_ENABLED=true \
   --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges \
   --security-opt seccomp=unconfined --security-opt apparmor=unconfined \
-  ghcr.io/yog-sotho/lisa-llm:1.0.0
+  ghcr.io/yog-sotho/lisa-llm:1.0.1
 docker logs lisa | grep "Sandboxed worker ready"
 ```
 
@@ -48,7 +48,7 @@ change.
 ```bash
 docker run -d --gpus all -p 8080:8080 -v ./models:/models:ro \
   -e LISA_API_KEYS="$KEY" -e LISA_API_KEY= \
-  ghcr.io/yog-sotho/lisa-llm:1.0.0-cuda
+  ghcr.io/yog-sotho/lisa-llm:1.0.1-cuda
 ```
 
 Needs an NVIDIA driver and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).

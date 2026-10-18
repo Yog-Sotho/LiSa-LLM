@@ -121,7 +121,7 @@ ahead, by up to 31 %.*
 **Linux binary** (x86_64 or aarch64, any distro with glibc 2.35+):
 
 ```bash
-VERSION=1.0.0 ARCH=x86_64        # or aarch64
+VERSION=1.0.1 ARCH=x86_64        # or aarch64
 curl -LO https://github.com/Yog-Sotho/LiSa-LLM/releases/download/v$VERSION/lisa-$VERSION-linux-$ARCH.tar.gz
 tar xzf lisa-$VERSION-linux-$ARCH.tar.gz
 sudo install -m 755 lisa-$VERSION-linux-$ARCH/bin/lisa /usr/local/bin/
@@ -150,7 +150,7 @@ Look for `"Sandboxed worker ready"` in the log: the model is loaded, inside the 
 KEY="$(openssl rand -hex 24)"; echo "Your API key: $KEY"
 docker run --rm -p 8080:8080 -v ./models:/models:ro \
   -e LISA_API_KEYS="$KEY" -e LISA_API_KEY= \
-  ghcr.io/yog-sotho/lisa-llm:1.0.0           # :1.0.0-cuda for NVIDIA GPUs
+  ghcr.io/yog-sotho/lisa-llm:1.0.1           # :1.0.1-cuda for NVIDIA GPUs
 ```
 
 [`docker-compose.yml`](docker-compose.yml) has ready-made CPU, sandboxed and GPU services. Building
@@ -160,7 +160,7 @@ from source, the sandbox in containers and the support matrix: [Installation](do
 
 Release archives and images are signed (Sigstore, keyless) and carry SLSA provenance and SBOMs.
 Checking takes one command each, e.g.
-`gh attestation verify lisa-1.0.0-linux-x86_64.tar.gz --repo Yog-Sotho/LiSa-LLM`.
+`gh attestation verify lisa-1.0.1-linux-x86_64.tar.gz --repo Yog-Sotho/LiSa-LLM`.
 All the commands: [Verifying a release](docs/installation.md#verifying-a-release).
 
 ---
@@ -257,7 +257,7 @@ TLS or Prometheus: [Deployment](docs/deployment.md).
 
 ## 🗺️ What's built, what's coming
 
-**Already available (v1.0.0):**
+**Already available (v1.0.1):**
 
 - ✅ llama.cpp engine: any GGUF model, every quantisation, optional CUDA offload
 - ✅ OpenAI-compatible chat and completions, streaming, JSON mode, 54 chat templates
