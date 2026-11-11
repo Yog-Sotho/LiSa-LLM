@@ -2,4 +2,4 @@
 # published to https://yog-sotho.github.io/LiSa-LLM/
 #   pip install -r requirements-docs.txt && mkdocs serve
 mkdocs==1.6.1                # MkDocs 2 drops the plugin and theme system Material needs
-mkdocs-material==9.7.7
+mkdocs-material==9.8.0
