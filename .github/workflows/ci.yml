@@ -42,7 +42,7 @@ jobs:
         run: |
           read -ra packages <<< "$APT_PACKAGES"
           sudo apt-get update && sudo apt-get install -y --no-install-recommends "${packages[@]}"
-      - uses: hendrikmuhs/ccache-action@dbeefd73e8e2ffc1bbc412570072735eb4db3607 # v1.2.25
+      - uses: hendrikmuhs/ccache-action@e91f31892a1d1b8c44424b1a94c0b7f52d337168 # v1.2.26
         with:
           key: ${{ matrix.compiler.name }}-${{ matrix.preset }}
       - name: Download test model
